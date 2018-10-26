@@ -7,7 +7,6 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-from openmc.data import ATOMIC_NUMBER, ATOMIC_SYMBOL
 
 
 class Model(object):
@@ -119,7 +118,7 @@ class Model(object):
         tallies.export_to_xml(os.path.join('openmc', 'tallies.xml'))
 
     def _build_mcnp(self):
-        """Generate the OpenMC input XML
+        """Generate the MCNP input file
 
         """
         # Directory from which MCNP will be run
