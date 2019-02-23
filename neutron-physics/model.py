@@ -50,10 +50,13 @@ class Model(object):
             msg = f'Unsupported MCNP cross section suffix {suffix}.'
             raise ValueError(msg)
         self.suffix = suffix
-        if library is not None and not Path(library).is_dir():
-            msg = f'{library} is not a directory.'
-            raise ValueError(msg)
-        self.library = library
+        if library is not None:
+            self.library = Path(library)
+            if not self.library.is_dir():
+                msg = f'{self.library} is not a directory.'
+                raise ValueError(msg)
+        else:
+            self.library = library
         self.name = name
 
     @property
@@ -94,14 +97,14 @@ class Model(object):
         return f'{1000000*m + 1000*Z + A}.{suffix}'
 
     def _create_library(self):
-        """Convert the ENDF ACE data from the MCNP distribution into an HDF5
-        library that can be used by OpenMC.
+        """Convert the ACE data from the MCNP distribution into an HDF5 library
+        that can be used by OpenMC.
 
         """
         if re.match('7[0-4]c', self.suffix):
             # Get the table from the ENDF/B-VII.0 neutron ACE files
             zaid = self.zaid(self.nuclide, self.suffix)
-            for path in Path(self.library).glob('endf70[a-k]'):
+            for path in self.library.glob('endf70[a-k]'):
                 try:
                     table = openmc.data.ace.get_table(path, zaid)
                 except ValueError:
@@ -111,7 +114,7 @@ class Model(object):
             Z, A, m = openmc.data.zam(self.nuclide)
             element = openmc.data.ATOMIC_SYMBOL[Z]
             szax = self.szax(self.nuclide, self.suffix)
-            path = Path(self.library) / f'endf71x/{element}/{szax}'
+            path = self.library / 'endf71x' / f'{element}' / f'{szax}'
             table = openmc.data.ace.get_table(path, szax)
 
         # Convert cross section data
@@ -119,13 +122,13 @@ class Model(object):
 
         # Export HDF5 file
         os.makedirs('openmc', exist_ok=True)
-        h5_file = Path(f'openmc/{data.name}.h5')
+        h5_file = Path('openmc') / f'{data.name}.h5'
         data.export_to_hdf5(h5_file, 'w')
 
         # Register with library and write cross_sections.xml
         data_lib = openmc.data.DataLibrary()
         data_lib.register_file(h5_file)
-        data_lib.export_to_xml(Path('openmc/cross_sections.xml'))
+        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
@@ -140,15 +143,15 @@ class Model(object):
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.library is not None:
-            xs_path = Path('openmc/cross_sections.xml').resolve()
+            xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(Path('openmc/materials.xml'))
+        materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
         sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
         cell = openmc.Cell(fill=materials, region=-sphere)
         geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(Path('openmc/geometry.xml'))
+        geometry.export_to_xml(Path('openmc') / 'geometry.xml')
 
         # Define source
         source = openmc.Source()
@@ -163,7 +166,7 @@ class Model(object):
         settings.run_mode = 'fixed source'
         settings.batches = 1
         settings.create_fission_neutrons = False
-        settings.export_to_xml(Path('openmc/settings.xml'))
+        settings.export_to_xml(Path('openmc') / 'settings.xml')
  
         # Define tallies
         energy_bins = np.logspace(3, np.log10(self.energy), 500)
@@ -172,7 +175,7 @@ class Model(object):
         tally.filters = [energy_filter]
         tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(Path('openmc/tallies.xml'))
+        tallies.export_to_xml(Path('openmc') / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
@@ -222,7 +225,7 @@ class Model(object):
         lines.append(f'nps {self.particles}')
  
         # Write the problem
-        with open(Path('mcnp/inp'), 'w') as f:
+        with open(Path('mcnp') / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _plot(self):
@@ -230,13 +233,13 @@ class Model(object):
  
         """
         # Read the results from the OpenMC statepoint
-        with openmc.StatePoint(Path('openmc/statepoint.1.h5')) as sp:
+        with openmc.StatePoint(Path('openmc') / 'statepoint.1.h5') as sp:
             t = sp.get_tally(name='neutron flux')
             x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]*1.e-6
             y_openmc = t.mean[:,0,0]
  
         # Read the results from the MCNP output file
-        with open(Path('mcnp/outp'), 'r') as f:
+        with open(Path('mcnp') / 'outp', 'r') as f:
             text = f.read()
             p = text.find('1tally')
             p = text.find('energy', p) + 10

@@ -53,10 +53,13 @@ class Model(object):
         self.energy = energy
         self.particles = particles
         self.electron_treatment = electron_treatment
-        if photon_library is not None and not Path(photon_library).is_dir:
-            msg = f'{photon_library} is not a directory.'
-            raise ValueError(msg)
-        self.photon_library = photon_library
+        if photon_library is not None:
+            self.photon_library = Path(photon_library)
+            if not self.photon_library.is_dir():
+                msg = f'{self.library} is not a directory.'
+                raise ValueError(msg)
+        else:
+            self.photon_library = photon_library
         self.name = name
 
     @property
@@ -64,8 +67,8 @@ class Model(object):
         return self.energy*1.e-6
 
     def _create_library(self):
-        """Convert the ENDF ACE data from the MCNP distribution into an HDF5
-        library that can be used by OpenMC.
+        """Convert the ACE data from the MCNP distribution into an HDF5 library
+        that can be used by OpenMC.
 
         """
         data_lib = openmc.data.DataLibrary()
@@ -74,7 +77,7 @@ class Model(object):
             Z = openmc.data.ATOMIC_NUMBER[element]
 
             # Get the table from the photon ACE library
-            path = Path(self.photon_library) / 'eprdata12'
+            path = self.photon_library / 'eprdata12'
             table = openmc.data.ace.get_table(path, f'{Z}000.12p')
 
             # Convert cross section data
@@ -138,7 +141,7 @@ class Model(object):
 
             # Export HDF5 file
             os.makedirs('openmc', exist_ok=True)
-            h5_file = Path(f'openmc/{data.name}.h5')
+            h5_file = Path('openmc') / f'{data.name}.h5'
             data.export_to_hdf5(h5_file, 'w')
 
             # Register with library
@@ -154,7 +157,7 @@ class Model(object):
                 h5_file = lib.get_by_material(nuclide)['path']
                 data_lib.register_file(h5_file)
 
-        data_lib.export_to_xml(Path('openmc/cross_sections.xml'))
+        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
@@ -170,9 +173,9 @@ class Model(object):
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.photon_library is not None:
-            xs_path = Path('openmc/cross_sections.xml').resolve()
+            xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(Path('openmc/materials.xml'))
+        materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
         sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
@@ -180,7 +183,7 @@ class Model(object):
         cell.fill = mat
         cell.region = -sphere
         geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(Path('openmc/geometry.xml'))
+        geometry.export_to_xml(Path('openmc') / 'geometry.xml')
 
         # Define source
         source = openmc.Source()
@@ -198,7 +201,7 @@ class Model(object):
         settings.photon_transport = True
         settings.electron_treatment = self.electron_treatment
         settings.cutoff = {'energy_photon' : 1000.}
-        settings.export_to_xml(Path('openmc/settings.xml'))
+        settings.export_to_xml(Path('openmc') / 'settings.xml')
  
         # Define tallies
         cell_filter = openmc.CellFilter(cell)
@@ -209,7 +212,7 @@ class Model(object):
         tally.filters = [cell_filter, energy_filter, particle_filter]
         tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(Path('openmc/tallies.xml'))
+        tallies.export_to_xml(Path('openmc') / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
@@ -263,7 +266,7 @@ class Model(object):
         lines.append(f'nps {self.particles}')
  
         # Write the problem
-        with open(Path('mcnp/inp'), 'w') as f:
+        with open(Path('mcnp') / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _plot(self):
@@ -271,13 +274,13 @@ class Model(object):
  
         """
         # Read the results from the OpenMC statepoint
-        with openmc.StatePoint(Path('openmc/statepoint.1.h5')) as sp:
+        with openmc.StatePoint(Path('openmc') / 'statepoint.1.h5') as sp:
             t = sp.get_tally(name='photon flux')
             x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]*1.e-6
             y_openmc = t.mean[:,0,0]
  
         # Read the results from the MCNP output file
-        with open(Path('mcnp/outp'), 'r') as f:
+        with open(Path('mcnp') / 'outp', 'r') as f:
             text = f.read()
             p = text.find('1tally')
             p = text.find('energy', p) + 10

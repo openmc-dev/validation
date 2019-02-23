@@ -18,7 +18,7 @@ parser.add_argument('-t', '--electron-treatment', choices=('ttb', 'led'),
                     default='ttb', help='Whether to use local energy'
                     'deposition or thick-target bremsstrahlung treatment '
                     'for electrons and positrons.')
-parser.add_argument('-k', '--photon-library', type=str,
+parser.add_argument('-l', '--photon-library', type=str,
                     help='Directory containing the MCNP ACE photon library '
                     'eprdata12. If specified, an HDF5 library that can be '
                     'used by OpenMC will be created for the given element.')
