@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 import os
+from pathlib import Path
+import re
 import subprocess
 
 from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-from openmc.data import ATOMIC_NUMBER
 
 
 class Model(object):
@@ -21,10 +22,16 @@ class Model(object):
         Density of the material in g/cm^3.
     energy : float
         Energy of the source (eV)
-    suffix : str
-        Cross section suffix for MCNP
     particles : int
         Number of source particles.
+    suffix : str
+        Cross section suffix for MCNP
+    library : str
+        Directory containing endf70[a-k] or endf71x MCNP ACE data library. If
+        specified, an HDF5 library that can be used by OpenMC will be created
+        from the MCNP data.
+    name : str
+        Name used for output.
 
     Attributes
     ----------
@@ -33,18 +40,94 @@ class Model(object):
 
     """
 
-    def __init__(self, nuclide, density, energy, suffix, particles=1000000):
+    def __init__(self, nuclide, density, energy, particles, suffix,
+                 library=None, name=None):
         self.nuclide = nuclide
         self.density = density
         self.energy = energy
-        self.suffix = suffix
         self.particles = particles
+        if not re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', suffix):
+            msg = f'Unsupported MCNP cross section suffix {suffix}.'
+            raise ValueError(msg)
+        self.suffix = suffix
+        if library is not None and not Path(library).is_dir():
+            msg = f'{library} is not a directory.'
+            raise ValueError(msg)
+        self.library = library
+        self.name = name
 
     @property
     def energy_mev(self):
         return self.energy*1.e-6
 
-    def _build_openmc(self):
+    def zaid(self, nuclide, suffix):
+        Z, A, m = openmc.data.zam(nuclide)
+
+        # Correct the ground state and first excited state of Am242, which are
+        # the reverse of the convention
+        if A == 242 and m == 0:
+            m = 1
+        elif A == 242 and m == 1:
+            m = 0
+
+        if m > 0:
+            A += 300 + 100*m
+
+        if re.match('(71[0-6]nc)', suffix):
+            suffix = f'8{suffix[2]}c'
+
+        return f'{1000*Z + A}.{suffix}'
+
+    def szax(self, nuclide, suffix):
+        Z, A, m = openmc.data.zam(nuclide)
+
+        # Correct the ground state and first excited state of Am242, which are
+        # the reverse of the convention
+        if A == 242 and m == 0:
+            m = 1
+        elif A == 242 and m == 1:
+            m = 0
+
+        if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
+            suffix = f'71{suffix[1]}nc'
+
+        return f'{1000000*m + 1000*Z + A}.{suffix}'
+
+    def _create_library(self):
+        """Convert the ENDF ACE data from the MCNP distribution into an HDF5
+        library that can be used by OpenMC.
+
+        """
+        if re.match('7[0-4]c', self.suffix):
+            # Get the table from the ENDF/B-VII.0 neutron ACE files
+            zaid = self.zaid(self.nuclide, self.suffix)
+            for path in Path(self.library).glob('endf70[a-k]'):
+                try:
+                    table = openmc.data.ace.get_table(path, zaid)
+                except ValueError:
+                    pass
+        else:
+            # Get the table from the ENDF/B-VII.1 neutron ACE files
+            Z, A, m = openmc.data.zam(self.nuclide)
+            element = openmc.data.ATOMIC_SYMBOL[Z]
+            szax = self.szax(self.nuclide, self.suffix)
+            path = Path(self.library) / f'endf71x/{element}/{szax}'
+            table = openmc.data.ace.get_table(path, szax)
+
+        # Convert cross section data
+        data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
+
+        # Export HDF5 file
+        os.makedirs('openmc', exist_ok=True)
+        h5_file = Path(f'openmc/{data.name}.h5')
+        data.export_to_hdf5(h5_file, 'w')
+
+        # Register with library and write cross_sections.xml
+        data_lib = openmc.data.DataLibrary()
+        data_lib.register_file(h5_file)
+        data_lib.export_to_xml(Path('openmc/cross_sections.xml'))
+
+    def _make_openmc_input(self):
         """Generate the OpenMC input XML
 
         """
@@ -56,13 +139,16 @@ class Model(object):
         mat.add_nuclide(self.nuclide, 1.0)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
-        materials.export_to_xml(os.path.join('openmc', 'materials.xml'))
+        if self.library is not None:
+            xs_path = Path('openmc/cross_sections.xml').resolve()
+            materials.cross_sections = str(xs_path)
+        materials.export_to_xml(Path('openmc/materials.xml'))
 
         # Set up geometry
         sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
         cell = openmc.Cell(fill=materials, region=-sphere)
         geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(os.path.join('openmc', 'geometry.xml'))
+        geometry.export_to_xml(Path('openmc/geometry.xml'))
 
         # Define source
         source = openmc.Source()
@@ -76,7 +162,8 @@ class Model(object):
         settings.particles = self.particles
         settings.run_mode = 'fixed source'
         settings.batches = 1
-        settings.export_to_xml(os.path.join('openmc', 'settings.xml'))
+        settings.create_fission_neutrons = False
+        settings.export_to_xml(Path('openmc/settings.xml'))
  
         # Define tallies
         energy_bins = np.logspace(3, np.log10(self.energy), 500)
@@ -85,9 +172,9 @@ class Model(object):
         tally.filters = [energy_filter]
         tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(os.path.join('openmc', 'tallies.xml'))
+        tallies.export_to_xml(Path('openmc/tallies.xml'))
 
-    def _build_mcnp(self):
+    def _make_mcnp_input(self):
         """Generate the MCNP input file
 
         """
@@ -99,11 +186,11 @@ class Model(object):
  
         # Create the cell cards: material 1 inside sphere, void outside
         lines.append('c --- Cell cards ---')
-        lines.append('1 1 -{} -1 imp:n=1'.format(self.density))
+        lines.append(f'1 1 -{self.density} -1 imp:n=1')
         lines.append('2 0 1 imp:n=0')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
-        # radius and  reflective boundary conditions
+        # radius and reflective boundary conditions
         lines.append('')
         lines.append('c --- Surface cards ---')
         lines.append('*1 so 1.0e9')
@@ -113,27 +200,29 @@ class Model(object):
         lines.append('c --- Data cards ---')
  
         # Materials
-        Z, A, m = openmc.data.zam(self.nuclide)
-        if m > 0:
-            A += 400
-        material_card = f'm1 {Z}{A:03}.{self.suffix} 1.0'
+        if re.match('(71[0-6]nc)', self.suffix):
+            zaid = self.szax(self.nuclide, self.suffix)
+        else:
+            zaid = self.zaid(self.nuclide, self.suffix)
+        material_card = f'm1 {zaid} 1.0'
         lines.append(material_card)
+        lines.append('nonu 2')
 
         # Physics: neutron transport
         lines.append('mode n')
  
         # Source definition: isotropic point source at center of sphere
-        lines.append('sdef cel=1 erg={}'.format(self.energy_mev))
+        lines.append(f'sdef cel=1 erg={self.energy_mev}')
  
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
-        lines.append('e4 1.e-3 498ilog {}'.format(self.energy_mev))
+        lines.append(f'e4 1.e-3 498ilog {self.energy_mev}')
  
         # Problem termination: number of particles to transport
-        lines.append('nps {}'.format(self.particles))
+        lines.append(f'nps {self.particles}')
  
         # Write the problem
-        with open(os.path.join('mcnp', 'inp'), 'w') as f:
+        with open(Path('mcnp/inp'), 'w') as f:
             f.write('\n'.join(lines))
 
     def _plot(self):
@@ -141,13 +230,13 @@ class Model(object):
  
         """
         # Read the results from the OpenMC statepoint
-        with openmc.StatePoint(os.path.join('openmc', 'statepoint.1.h5')) as sp:
+        with openmc.StatePoint(Path('openmc/statepoint.1.h5')) as sp:
             t = sp.get_tally(name='neutron flux')
             x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]*1.e-6
             y_openmc = t.mean[:,0,0]
  
         # Read the results from the MCNP output file
-        with open(os.path.join('mcnp', 'outp'), 'r') as f:
+        with open(Path('mcnp/outp'), 'r') as f:
             text = f.read()
             p = text.find('1tally')
             p = text.find('energy', p) + 10
@@ -203,38 +292,39 @@ class Model(object):
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
-        name = f'{self.nuclide}-{self.energy_mev}MeV.png'
-        plt.savefig(os.path.join('plots', name), bbox_inches='tight')
+        if self.name is None:
+            name = f'{self.nuclide}.png'
+        else:
+            name = f'{self.name}.png'
+        plt.savefig(Path('plots') / name, bbox_inches='tight')
         plt.close()
 
     def run(self):
         """Generate inputs, run problem, and plot results.
  
         """
-        # Generate inputs
-        self._build_openmc()
-        self._build_mcnp()
+        if self.library is not None:
+            self._create_library()
 
-        # Run Openmc
+        self._make_openmc_input()
+        self._make_mcnp_input()
+
         openmc.run(cwd='openmc')
  
         # Remove old MCNP output files
         for f in ('outp', 'runtpe'):
             try:
-                os.remove(os.path.join('mcnp', f))
+                os.remove(Path('mcnp') / f)
             except OSError:
                 pass
  
-        # Run MCNP
+        # Run MCNP and capture and print output
         p = subprocess.Popen('mcnp6', cwd='mcnp', stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, universal_newlines=True)
- 
-        # Capture and print MCNP output
         while True:
             line = p.stdout.readline()
             if not line and p.poll() is not None:
                 break
             print(line, end='')
 
-        # Plot results
         self._plot()

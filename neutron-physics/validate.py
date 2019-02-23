@@ -12,12 +12,17 @@ parser.add_argument('-d', '--density', type=float, default=1.,
                     help='Density of the material in g/cm^3')
 parser.add_argument('-e', '--energy', type=float, default=1e6,
                     help='Energy of the source in eV')
-parser.add_argument('-s', '--suffix', default='70c',
-                    help='MCNP cross section suffix')
 parser.add_argument('-p', '--particles', type=int, default=100000,
                     help='Number of source particles')
+parser.add_argument('-s', '--suffix', default='70c',
+                    help='MCNP cross section suffix')
+parser.add_argument('-l', '--library', type=str,
+                    help='Directory containing endf70[a-k] or endf71x MCNP ACE '
+                    'data library. If specified, an HDF5 library that can be '
+                    'used by OpenMC will be created from the MCNP data.')
+parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
 args = parser.parse_args()
 
-m = model.Model(args.nuclide, args.density, args.energy,
-                args.suffix, args.particles)
+m = model.Model(args.nuclide, args.density, args.energy, args.particles,
+                args.suffix, args.library, args.output_name)
 m.run()
