@@ -392,8 +392,9 @@ class Model(object):
         lines = ['Broomstick problem']
  
         # Create the cell cards: material 1 inside cylinder, void outside
+        kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
         lines.append('c --- Cell cards ---')
-        lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1')
+        lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1 tmp={kT}')
         lines.append('2 0 -4 5 -6 imp:n,p=1')
         lines.append('3 0 #(-4 5 -7) imp:n,p=0')
  
@@ -505,13 +506,14 @@ class Model(object):
         ax1.set_ylabel('Particle Current', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
-        title = f'{self.material}, {self.energy_mev} MeV Source'
+        title = f'{self.material}, {self.energy_mev:.1e} MeV Source'
         plt.title(title)
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
         if self.name is None:
-            name = f'{self.material}.png'
+            name = (f'{self.material}-{self.energy_mev:.1e}MeV-'
+                    f'{self._temperature:.1f}K.png')
         else:
             name = f'{self.name}.png'
         plt.savefig(Path('plots') / name, bbox_inches='tight')

@@ -350,13 +350,13 @@ class Model(object):
         ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
-        title = f'{self.material}, {self.energy_mev} MeV Source'
+        title = f'{self.material}, {self.energy_mev:.1e} MeV Source'
         plt.title(title)
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
         if self.name is None:
-            name = f'{self.material}.png'
+            name = f'{self.material}-{self.energy_mev:.1e}MeV.png'
         else:
             name = f'{self.name}.png'
         plt.savefig(Path('plots') / name, bbox_inches='tight')

@@ -242,8 +242,9 @@ class Model(object):
         lines = ['Point source in infinite geometry']
  
         # Create the cell cards: material 1 inside sphere, void outside
+        kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
         lines.append('c --- Cell cards ---')
-        lines.append(f'1 1 -{self.density} -1 imp:n=1')
+        lines.append(f'1 1 -{self.density} -1 imp:n=1 tmp={kT}')
         lines.append('2 0 1 imp:n=0')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
@@ -289,7 +290,7 @@ class Model(object):
         # Read the results from the OpenMC statepoint
         with openmc.StatePoint(Path('openmc') / 'statepoint.1.h5') as sp:
             t = sp.get_tally(name='neutron flux')
-            x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]*1.e-6
+            x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]
             y_openmc = t.mean[:,0,0]
  
         # Read the results from the MCNP output file
@@ -300,13 +301,13 @@ class Model(object):
             q = text.find('total', p)
             t = np.fromiter(text[p:q].split(), float)
             t.shape = (len(t) // 3, 3)
-            x_mcnp = t[1:,0]
+            x_mcnp = t[1:,0] * 1.e6
             y_mcnp = t[1:,1]
             sd = t[1:,2]
  
         # Normalize the spectra
-        y_openmc /= np.diff(np.insert(x_openmc, 0, 1.e-11))*sum(y_openmc)
-        y_mcnp /= np.diff(np.insert(x_mcnp, 0, 1.e-11))*sum(y_mcnp)
+        y_openmc /= np.diff(np.insert(x_openmc, 0, 1.e-5))*sum(y_openmc)
+        y_mcnp /= np.diff(np.insert(x_mcnp, 0, 1.e-5))*sum(y_mcnp)
  
         # Compute the relative error
         err = np.zeros_like(y_mcnp)
@@ -339,18 +340,19 @@ class Model(object):
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
  
         # Set axes labels and limits
-        ax1.set_xlim([1.e-11, self.energy_mev])
-        ax1.set_xlabel('Energy (MeV)', size=12)
+        ax1.set_xlim([1.e-5, self.energy])
+        ax1.set_xlabel('Energy (eV)', size=12)
         ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
-        title = f'{self.nuclide}, {self.energy_mev} MeV Source'
+        title = f'{self.nuclide}, {self.energy:.1e} eV Source'
         plt.title(title)
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
         if self.name is None:
-            name = f'{self.nuclide}.png'
+            name = (f'{self.nuclide}-{self.energy:.1e}eV-'
+                    f'{self._temperature:.1f}K.png')
         else:
             name = f'{self.name}.png'
         plt.savefig(Path('plots') / name, bbox_inches='tight')
