@@ -40,6 +40,25 @@ class Model(object):
 
     Attributes
     ----------
+    material : str
+        Name of the material.
+    density : float
+        Density of the material in g/cm^3.
+    elements : list of tuple
+        List in which each item is a 2-tuple consisting of an element string and
+        the atom fraction.
+    energy : float
+        Energy of the source (eV)
+    particles : int
+        Number of source particles.
+    electron_treatment : {'led' or 'ttb'}
+        Whether to deposit electron energy locally ('led') or create secondary
+        bremsstrahlung photons ('ttb').
+    photon_library : str
+        Directory containing the MCNP ACE photon library eprdata12. If
+        specified, an HDF5 library that can be used by OpenMC will be created.
+    name : str
+        Name used for output.
     energy_mev : float
         Energy of the source (MeV)
 

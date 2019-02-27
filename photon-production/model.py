@@ -13,6 +13,71 @@ from scipy.interpolate import CubicSpline
 import openmc
 
 
+def zaid(nuclide, suffix):
+    """ZA identifier of the nuclide
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        ZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Correct the ground state and first excited state of Am242, which are
+    # the reverse of the convention
+    if A == 242 and m == 0:
+        m = 1
+    elif A == 242 and m == 1:
+        m = 0
+
+    if m > 0:
+        A += 300 + 100*m
+
+    if re.match('(71[0-6]nc)', suffix):
+        suffix = f'8{suffix[2]}c'
+
+    return f'{1000*Z + A}.{suffix}'
+
+
+def szax(nuclide, suffix):
+    """SZA identifier of the nuclide
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        SZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Correct the ground state and first excited state of Am242, which are
+    # the reverse of the convention
+    if A == 242 and m == 0:
+        m = 1
+    elif A == 242 and m == 1:
+        m = 0
+
+    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
+        suffix = f'71{suffix[1]}nc'
+
+    return f'{1000000*m + 1000*Z + A}.{suffix}'
+
+
 class Model(object):
     """Monoenergetic, monodirectional neutron source directed down a thin,
     infinitely long cylinder ('Broomstick' problem).
@@ -47,8 +112,35 @@ class Model(object):
 
     Attributes
     ----------
+    material : str
+        Name of the material.
+    density : float
+        Density of the material in g/cm^3.
+    nuclides : list of tuple
+        List in which each item is a 2-tuple consisting of a nuclide string and
+        the atom fraction.
+    energy : float
+        Energy of the source (eV)
+    particles : int
+        Number of source particles.
+    electron_treatment : {'led' or 'ttb'}
+        Whether to deposit electron energy locally ('led') or create secondary
+        bremsstrahlung photons ('ttb').
+    suffix : str
+        Neutron cross section suffix for MCNP
+    library : str
+        Directory containing endf70[a-k] or endf71x MCNP ACE data library. If
+        specified, an HDF5 library that can be used by OpenMC will be created
+        from the MCNP data.
+    photon_library : str
+        Directory containing the MCNP ACE photon library eprdata12. If
+        specified, an HDF5 library that can be used by OpenMC will be created.
+    name : str
+        Name used for output.
     energy_mev : float
         Energy of the source (MeV)
+    temperature : float
+        Temperature (Kelvin) of the cross section data
 
     """
 
@@ -80,43 +172,11 @@ class Model(object):
         else:
             self.photon_library = photon_library
         self.name = name
+        self._temperature = None
 
     @property
     def energy_mev(self):
         return self.energy*1.e-6
-
-    def zaid(self, nuclide, suffix):
-        Z, A, m = openmc.data.zam(nuclide)
-
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if m > 0:
-            A += 300 + 100*m
-
-        if re.match('(71[0-6]nc)', suffix):
-            suffix = f'8{suffix[2]}c'
-
-        return f'{1000*Z + A}.{suffix}'
-
-    def szax(self, nuclide, suffix):
-        Z, A, m = openmc.data.zam(nuclide)
-
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
-            suffix = f'71{suffix[1]}nc'
-
-        return f'{1000000*m + 1000*Z + A}.{suffix}'
 
     def _create_library(self):
         """Convert the ACE data from the MCNP distribution into an HDF5 library
@@ -133,20 +193,21 @@ class Model(object):
 
                 if re.match('7[0-4]c', self.suffix):
                     # Get the table from the ENDF/B-VII.0 neutron ACE library
-                    zaid = self.zaid(nuclide, self.suffix)
+                    name = zaid(nuclide, self.suffix)
                     for path in self.library.glob('endf70[a-k]'):
                         try:
-                            table = openmc.data.ace.get_table(path, zaid)
+                            table = openmc.data.ace.get_table(path, name)
                         except ValueError:
                             pass
                 else:
                     # Get the table from the ENDF/B-VII.1 neutron ACE library
-                    szax = self.szax(nuclide, self.suffix)
-                    path = self.library / 'endf71x' / f'{element}' / f'{szax}'
-                    table = openmc.data.ace.get_table(path, szax)
+                    name = szax(nuclide, self.suffix)
+                    path = self.library / 'endf71x' / f'{element}' / f'{name}'
+                    table = openmc.data.ace.get_table(path, name)
 
                 # Convert cross section data
                 data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
+                self._temperature = data.kTs[0] / openmc.data.K_BOLTZMANN
 
                 # Export HDF5 file
                 os.makedirs('openmc', exist_ok=True)
@@ -296,6 +357,8 @@ class Model(object):
  
         # Settings
         settings = openmc.Settings()
+        if self._temperature is not None:
+            settings.temperature = {'default': self._temperature}
         settings.source = source
         settings.particles = self.particles
         settings.run_mode = 'fixed source'
@@ -350,10 +413,10 @@ class Model(object):
         material_card = 'm1'
         for nuclide, fraction in self.nuclides:
             if re.match('(71[0-6]nc)', self.suffix):
-                zaid = self.szax(nuclide, self.suffix)
+                name = szax(nuclide, self.suffix)
             else:
-                zaid = self.zaid(nuclide, self.suffix)
-            material_card += f' {zaid} -{fraction} plib=12p'
+                name = zaid(nuclide, self.suffix)
+            material_card += f' {name} -{fraction} plib=12p'
         lines.append(material_card)
  
         # Physics: neutron and neutron-induced photon, 1 keV photon cutoff energy

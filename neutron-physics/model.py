@@ -11,6 +11,71 @@ import numpy as np
 import openmc
 
 
+def zaid(nuclide, suffix):
+    """ZA identifier of the nuclide
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        ZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Correct the ground state and first excited state of Am242, which are
+    # the reverse of the convention
+    if A == 242 and m == 0:
+        m = 1
+    elif A == 242 and m == 1:
+        m = 0
+
+    if m > 0:
+        A += 300 + 100*m
+
+    if re.match('(71[0-6]nc)', suffix):
+        suffix = f'8{suffix[2]}c'
+
+    return f'{1000*Z + A}.{suffix}'
+
+
+def szax(nuclide, suffix):
+    """SZA identifier of the nuclide
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        SZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Correct the ground state and first excited state of Am242, which are
+    # the reverse of the convention
+    if A == 242 and m == 0:
+        m = 1
+    elif A == 242 and m == 1:
+        m = 0
+
+    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
+        suffix = f'71{suffix[1]}nc'
+
+    return f'{1000000*m + 1000*Z + A}.{suffix}'
+
+
 class Model(object):
     """Monoenergetic, isotropic point source in an infinite geometry.
 
@@ -35,8 +100,26 @@ class Model(object):
 
     Attributes
     ----------
+    nuclide : str
+        Name of the nuclide
+    density : float
+        Density of the material in g/cm^3.
+    energy : float
+        Energy of the source (eV)
+    particles : int
+        Number of source particles.
+    suffix : str
+        Cross section suffix for MCNP
+    library : str
+        Directory containing endf70[a-k] or endf71x MCNP ACE data library. If
+        specified, an HDF5 library that can be used by OpenMC will be created
+        from the MCNP data.
+    name : str
+        Name used for output.
     energy_mev : float
         Energy of the source (MeV)
+    temperature : float
+        Temperature (Kelvin) of the cross section data
 
     """
 
@@ -58,43 +141,11 @@ class Model(object):
         else:
             self.library = library
         self.name = name
+        self._temperature = None
 
     @property
     def energy_mev(self):
         return self.energy*1.e-6
-
-    def zaid(self, nuclide, suffix):
-        Z, A, m = openmc.data.zam(nuclide)
-
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if m > 0:
-            A += 300 + 100*m
-
-        if re.match('(71[0-6]nc)', suffix):
-            suffix = f'8{suffix[2]}c'
-
-        return f'{1000*Z + A}.{suffix}'
-
-    def szax(self, nuclide, suffix):
-        Z, A, m = openmc.data.zam(nuclide)
-
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
-            suffix = f'71{suffix[1]}nc'
-
-        return f'{1000000*m + 1000*Z + A}.{suffix}'
 
     def _create_library(self):
         """Convert the ACE data from the MCNP distribution into an HDF5 library
@@ -103,22 +154,23 @@ class Model(object):
         """
         if re.match('7[0-4]c', self.suffix):
             # Get the table from the ENDF/B-VII.0 neutron ACE files
-            zaid = self.zaid(self.nuclide, self.suffix)
+            name = zaid(self.nuclide, self.suffix)
             for path in self.library.glob('endf70[a-k]'):
                 try:
-                    table = openmc.data.ace.get_table(path, zaid)
+                    table = openmc.data.ace.get_table(path, name)
                 except ValueError:
                     pass
         else:
             # Get the table from the ENDF/B-VII.1 neutron ACE files
             Z, A, m = openmc.data.zam(self.nuclide)
             element = openmc.data.ATOMIC_SYMBOL[Z]
-            szax = self.szax(self.nuclide, self.suffix)
-            path = self.library / 'endf71x' / f'{element}' / f'{szax}'
-            table = openmc.data.ace.get_table(path, szax)
+            name = szax(self.nuclide, self.suffix)
+            path = self.library / 'endf71x' / f'{element}' / f'{name}'
+            table = openmc.data.ace.get_table(path, name)
 
         # Convert cross section data
         data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
+        self._temperature = data.kTs[0] / openmc.data.K_BOLTZMANN
 
         # Export HDF5 file
         os.makedirs('openmc', exist_ok=True)
@@ -161,6 +213,8 @@ class Model(object):
 
         # Settings
         settings = openmc.Settings()
+        if self._temperature is not None:
+            settings.temperature = {'default': self._temperature}
         settings.source = source
         settings.particles = self.particles
         settings.run_mode = 'fixed source'
@@ -204,10 +258,10 @@ class Model(object):
  
         # Materials
         if re.match('(71[0-6]nc)', self.suffix):
-            zaid = self.szax(self.nuclide, self.suffix)
+            name = szax(self.nuclide, self.suffix)
         else:
-            zaid = self.zaid(self.nuclide, self.suffix)
-        material_card = f'm1 {zaid} 1.0'
+            name = zaid(self.nuclide, self.suffix)
+        material_card = f'm1 {name} 1.0'
         lines.append(material_card)
         lines.append('nonu 2')
 
