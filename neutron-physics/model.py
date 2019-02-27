@@ -223,7 +223,7 @@ class Model(object):
         settings.export_to_xml(Path('openmc') / 'settings.xml')
  
         # Define tallies
-        energy_bins = np.logspace(3, np.log10(self.energy), 500)
+        energy_bins = np.logspace(-5, np.log10(self.energy), 500)
         energy_filter = openmc.EnergyFilter(energy_bins)
         tally = openmc.Tally(name='neutron flux')
         tally.filters = [energy_filter]
@@ -273,7 +273,7 @@ class Model(object):
  
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
-        lines.append(f'e4 1.e-3 498ilog {self.energy_mev}')
+        lines.append(f'e4 1.e-11 498ilog {self.energy_mev}')
  
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -305,8 +305,8 @@ class Model(object):
             sd = t[1:,2]
  
         # Normalize the spectra
-        y_openmc /= np.diff(np.insert(x_openmc, 0, 1.e-3))*sum(y_openmc)
-        y_mcnp /= np.diff(np.insert(x_mcnp, 0, 1.e-3))*sum(y_mcnp)
+        y_openmc /= np.diff(np.insert(x_openmc, 0, 1.e-11))*sum(y_openmc)
+        y_mcnp /= np.diff(np.insert(x_mcnp, 0, 1.e-11))*sum(y_mcnp)
  
         # Compute the relative error
         err = np.zeros_like(y_mcnp)
@@ -339,7 +339,7 @@ class Model(object):
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
  
         # Set axes labels and limits
-        ax1.set_xlim([1.e-3, self.energy_mev])
+        ax1.set_xlim([1.e-11, self.energy_mev])
         ax1.set_xlabel('Energy (MeV)', size=12)
         ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
