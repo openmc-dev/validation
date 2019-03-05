@@ -102,22 +102,16 @@ class Model(object):
             # Convert cross section data
             data = openmc.data.IncidentPhoton.from_ace(table)
 
-            # Add stopping powers for thick-target bremsstrahlung approximation
-            # used in OpenMC
+            # Add data used for calculating stopping powers used in OpenMC
             data_path = Path(openmc.data.__file__).parent
-            if Z < 99:
-                path = data_path / 'stopping_powers.h5'
-                with h5py.File(path, 'r') as f:
-                    # Units are in MeV; convert to eV
-                    data.stopping_powers['energy'] = f['energy'].value*1.e6
-
-                    # Units are in MeV cm^2/g; convert to eV cm^2/g
-                    group = f[f'{Z:03}']
-                    data.stopping_powers.update({
-                        'I': group.attrs['I'],
-                        's_collision': group['s_collision'].value*1.e6,
-                        's_radiative': group['s_radiative'].value*1.e6
-                    })
+            path = data_path / 'density_effect.h5'
+            with h5py.File(path, 'r') as f:
+                group = f['{:03}'.format(Z)]
+                data.bremsstrahlung.update({
+                    'I': group.attrs['I'],
+                    'num_electrons': group['num_electrons'].value,
+                    'ionization_energy': group['ionization_energy'].value
+                })
 
             # Add bremsstrahlung cross sections used in OpenMC
             path = data_path / 'BREMX.DAT'
