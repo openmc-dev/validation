@@ -349,11 +349,11 @@ class Model(object):
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
-        if self.name is None:
-            name = f'{self.material}-{self.energy_mev:.1e}MeV.png'
+        if self.name is not None:
+            name = self.name
         else:
-            name = f'{self.name}.png'
-        plt.savefig(Path('plots') / name, bbox_inches='tight')
+            name = f'{self.material}-{self.energy_mev:.1e}MeV'
+        plt.savefig(Path('plots') / (name + '.png'), bbox_inches='tight')
         plt.close()
 
     def run(self):

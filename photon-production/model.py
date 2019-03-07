@@ -365,7 +365,11 @@ class Model(object):
         # Define filters
         surface_filter = openmc.SurfaceFilter(cyl)
         particle_filter = openmc.ParticleFilter('photon')
-        energy_bins = np.logspace(3, np.log10(2*self.energy), 500)
+        if self.energy < 1.0e6:
+            energy_max = 1.0e7
+        else:
+            energy_max = 10 * self.energy
+        energy_bins = np.logspace(3, np.log10(energy_max), 500)
         energy_filter = openmc.EnergyFilter(energy_bins)
  
         # Create tallies and export to XML
@@ -386,9 +390,12 @@ class Model(object):
         lines = ['Broomstick problem']
  
         # Create the cell cards: material 1 inside cylinder, void outside
-        kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
         lines.append('c --- Cell cards ---')
-        lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1 tmp={kT}')
+        if self._temperature is not None:
+            kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
+            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1 tmp={kT}')
+        else:
+            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1')
         lines.append('2 0 -4 5 -6 imp:n,p=1')
         lines.append('3 0 #(-4 5 -7) imp:n,p=0')
  
@@ -429,7 +436,11 @@ class Model(object):
  
         # Tallies: Photon current over surface
         lines.append('f1:p 4')
-        lines.append(f'e1 1.e-3 498ilog {2*self.energy_mev}')
+        if self.energy_mev <= 1.0:
+            energy_max = 10.0
+        else:
+            energy_max = 10 * self.energy_mev
+        lines.append(f'e1 1.e-3 498ilog {energy_max}')
  
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -495,7 +506,11 @@ class Model(object):
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
  
         # Set axes labels and limits
-        ax1.set_xlim([1.e-3, 2*self.energy_mev])
+        if self.energy_mev <= 1.0:
+            energy_max = 10.0
+        else:
+            energy_max = 10 * self.energy_mev
+        ax1.set_xlim([1.e-3, energy_max])
         ax1.set_xlabel('Energy (MeV)', size=12)
         ax1.set_ylabel('Particle Current', size=12)
         ax1.legend()
@@ -505,12 +520,13 @@ class Model(object):
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
-        if self.name is None:
-            name = (f'{self.material}-{self.energy_mev:.1e}MeV-'
-                    f'{self._temperature:.1f}K.png')
+        if self.name is not None:
+            name = self.name
         else:
-            name = f'{self.name}.png'
-        plt.savefig(Path('plots') / name, bbox_inches='tight')
+            name = f'{self.material}-{self.energy_mev:.1e}MeV'
+            if self._temperature is not None:
+                name +=  f'-{self._temperature:.1f}K'
+        plt.savefig(Path('plots') / (name + '.png'), bbox_inches='tight')
         plt.close()
 
     def run(self):

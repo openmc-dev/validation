@@ -242,9 +242,12 @@ class Model(object):
         lines = ['Point source in infinite geometry']
  
         # Create the cell cards: material 1 inside sphere, void outside
-        kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
         lines.append('c --- Cell cards ---')
-        lines.append(f'1 1 -{self.density} -1 imp:n=1 tmp={kT}')
+        if self._temperature is not None:
+            kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
+            lines.append(f'1 1 -{self.density} -1 imp:n=1 tmp={kT}')
+        else:
+            lines.append(f'1 1 -{self.density} -1 imp:n=1')
         lines.append('2 0 1 imp:n=0')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
@@ -350,12 +353,13 @@ class Model(object):
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
-        if self.name is None:
-            name = (f'{self.nuclide}-{self.energy:.1e}eV-'
-                    f'{self._temperature:.1f}K.png')
+        if self.name is not None:
+            name = self.name
         else:
-            name = f'{self.name}.png'
-        plt.savefig(Path('plots') / name, bbox_inches='tight')
+            name = f'{self.nuclide}-{self.energy:.1e}eV'
+            if self._temperature is not None:
+                name +=  f'-{self._temperature:.1f}K'
+        plt.savefig(Path('plots') / (name + '.png'), bbox_inches='tight')
         plt.close()
 
     def run(self):
