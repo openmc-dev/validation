@@ -200,7 +200,7 @@ class Model(object):
         materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
-        sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
+        sphere = openmc.Sphere(boundary_type='reflective', r=1.e9)
         cell = openmc.Cell(fill=materials, region=-sphere)
         geometry = openmc.Geometry([cell])
         geometry.export_to_xml(Path('openmc') / 'geometry.xml')
@@ -359,7 +359,7 @@ class Model(object):
             name = f'{self.nuclide}-{self.energy:.1e}eV'
             if self._temperature is not None:
                 name +=  f'-{self._temperature:.1f}K'
-        plt.savefig(Path('plots') / (name + '.png'), bbox_inches='tight')
+        plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
         plt.close()
 
     def run(self):

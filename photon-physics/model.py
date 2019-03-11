@@ -102,56 +102,6 @@ class Model(object):
             # Convert cross section data
             data = openmc.data.IncidentPhoton.from_ace(table)
 
-            # Add data used for calculating stopping powers used in OpenMC
-            data_path = Path(openmc.data.__file__).parent
-            path = data_path / 'density_effect.h5'
-            with h5py.File(path, 'r') as f:
-                group = f['{:03}'.format(Z)]
-                data.bremsstrahlung.update({
-                    'I': group.attrs['I'],
-                    'num_electrons': group['num_electrons'].value,
-                    'ionization_energy': group['ionization_energy'].value
-                })
-
-            # Add bremsstrahlung cross sections used in OpenMC
-            path = data_path / 'BREMX.DAT'
-            brem = open(path, 'r').read().split()
-
-            # Incident electron kinetic energy grid in eV
-            data.bremsstrahlung['electron_energy'] = np.logspace(3, 9, 200)
-            log_energy = np.log(data.bremsstrahlung['electron_energy'])
-
-            # Get number of tabulated electron and photon energy values
-            n = int(brem[37])
-            k = int(brem[38])
-
-            # Index in data
-            p = 39
-
-            # Get log of incident electron kinetic energy values, used for
-            # cubic spline interpolation in log energy. Units are in MeV, so
-            # convert to eV.
-            logx = np.log(np.fromiter(brem[p:p+n], float, n)*1.e6)
-            p += n
-
-            # Get reduced photon energy values
-            data.bremsstrahlung['photon_energy'] = np.fromiter(brem[p:p+k], float, k)
-            p += k
-
-            # Get the scaled cross section values for each electron energy
-            # and reduced photon energy for this Z. Units are in mb, so
-            # convert to b.
-            p += (Z - 1)*n*k
-            y = np.reshape(np.fromiter(brem[p:p+n*k], float, n*k), (n, k))*1.0e-3
-
-            data.bremsstrahlung['dcs'] = np.empty([len(log_energy), k])
-            for j in range(k):
-                # Cubic spline interpolation in log energy and linear DCS
-                cs = CubicSpline(logx, y[:,j])
-
-                # Get scaled DCS values (millibarns) on new energy grid
-                data.bremsstrahlung['dcs'][:,j] = cs(log_energy)
-
             # Export HDF5 file
             os.makedirs('openmc', exist_ok=True)
             h5_file = Path('openmc') / f'{data.name}.h5'
@@ -191,7 +141,7 @@ class Model(object):
         materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
-        sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
+        sphere = openmc.Sphere(boundary_type='reflective', r=1.e9)
         cell = openmc.Cell()
         cell.fill = mat
         cell.region = -sphere
@@ -353,7 +303,7 @@ class Model(object):
             name = self.name
         else:
             name = f'{self.material}-{self.energy_mev:.1e}MeV'
-        plt.savefig(Path('plots') / (name + '.png'), bbox_inches='tight')
+        plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
         plt.close()
 
     def run(self):
