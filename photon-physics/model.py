@@ -102,62 +102,6 @@ class Model(object):
             # Convert cross section data
             data = openmc.data.IncidentPhoton.from_ace(table)
 
-            # Add stopping powers for thick-target bremsstrahlung approximation
-            # used in OpenMC
-            data_path = Path(openmc.data.__file__).parent
-            if Z < 99:
-                path = data_path / 'stopping_powers.h5'
-                with h5py.File(path, 'r') as f:
-                    # Units are in MeV; convert to eV
-                    data.stopping_powers['energy'] = f['energy'].value*1.e6
-
-                    # Units are in MeV cm^2/g; convert to eV cm^2/g
-                    group = f[f'{Z:03}']
-                    data.stopping_powers.update({
-                        'I': group.attrs['I'],
-                        's_collision': group['s_collision'].value*1.e6,
-                        's_radiative': group['s_radiative'].value*1.e6
-                    })
-
-            # Add bremsstrahlung cross sections used in OpenMC
-            path = data_path / 'BREMX.DAT'
-            brem = open(path, 'r').read().split()
-
-            # Incident electron kinetic energy grid in eV
-            data.bremsstrahlung['electron_energy'] = np.logspace(3, 9, 200)
-            log_energy = np.log(data.bremsstrahlung['electron_energy'])
-
-            # Get number of tabulated electron and photon energy values
-            n = int(brem[37])
-            k = int(brem[38])
-
-            # Index in data
-            p = 39
-
-            # Get log of incident electron kinetic energy values, used for
-            # cubic spline interpolation in log energy. Units are in MeV, so
-            # convert to eV.
-            logx = np.log(np.fromiter(brem[p:p+n], float, n)*1.e6)
-            p += n
-
-            # Get reduced photon energy values
-            data.bremsstrahlung['photon_energy'] = np.fromiter(brem[p:p+k], float, k)
-            p += k
-
-            # Get the scaled cross section values for each electron energy
-            # and reduced photon energy for this Z. Units are in mb, so
-            # convert to b.
-            p += (Z - 1)*n*k
-            y = np.reshape(np.fromiter(brem[p:p+n*k], float, n*k), (n, k))*1.0e-3
-
-            data.bremsstrahlung['dcs'] = np.empty([len(log_energy), k])
-            for j in range(k):
-                # Cubic spline interpolation in log energy and linear DCS
-                cs = CubicSpline(logx, y[:,j])
-
-                # Get scaled DCS values (millibarns) on new energy grid
-                data.bremsstrahlung['dcs'][:,j] = cs(log_energy)
-
             # Export HDF5 file
             os.makedirs('openmc', exist_ok=True)
             h5_file = Path('openmc') / f'{data.name}.h5'
@@ -197,7 +141,7 @@ class Model(object):
         materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
-        sphere = openmc.Sphere(boundary_type='reflective', R=1.e9)
+        sphere = openmc.Sphere(boundary_type='reflective', r=1.e9)
         cell = openmc.Cell()
         cell.fill = mat
         cell.region = -sphere
@@ -355,11 +299,11 @@ class Model(object):
  
         # Save plot
         os.makedirs('plots', exist_ok=True)
-        if self.name is None:
-            name = f'{self.material}-{self.energy_mev:.1e}MeV.png'
+        if self.name is not None:
+            name = self.name
         else:
-            name = f'{self.name}.png'
-        plt.savefig(Path('plots') / name, bbox_inches='tight')
+            name = f'{self.material}-{self.energy_mev:.1e}MeV'
+        plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
         plt.close()
 
     def run(self):
