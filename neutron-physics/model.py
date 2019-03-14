@@ -89,6 +89,8 @@ class Model(object):
         Energy of the source (eV)
     particles : int
         Number of source particles.
+    code : {'mcnp', 'serpent'}
+        Code to validate against
     suffix : str
         Cross section suffix for MCNP
     library : str
@@ -108,6 +110,8 @@ class Model(object):
         Energy of the source (eV)
     particles : int
         Number of source particles.
+    code : {'mcnp', 'serpent'}
+        Code to validate against
     suffix : str
         Cross section suffix for MCNP
     library : str
@@ -120,32 +124,64 @@ class Model(object):
         Energy of the source (MeV)
     temperature : float
         Temperature (Kelvin) of the cross section data
+    n_bins : int
+        Number of bins in the energy grid
 
     """
 
-    def __init__(self, nuclide, density, energy, particles, suffix,
+    def __init__(self, nuclide, density, energy, particles, code, suffix,
                  library=None, name=None):
         self.nuclide = nuclide
         self.density = density
         self.energy = energy
         self.particles = particles
-        if not re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', suffix):
-            msg = f'Unsupported MCNP cross section suffix {suffix}.'
-            raise ValueError(msg)
+        self.code = code
         self.suffix = suffix
-        if library is not None:
-            self.library = Path(library)
-            if not self.library.is_dir():
-                msg = f'{self.library} is not a directory.'
-                raise ValueError(msg)
-        else:
-            self.library = library
+        self.library = library
         self.name = name
         self._temperature = None
+        self._n_bins = 500
+
+    @property
+    def code(self):
+        return self._code
+
+    @property
+    def suffix(self):
+        return self._suffix
+
+    @property
+    def library(self):
+        return self._library
 
     @property
     def energy_mev(self):
-        return self.energy*1.e-6
+        return self.energy * 1.e-6
+
+    @code.setter
+    def code(self, code):
+        if code not in ['mcnp', 'serpent']:
+            msg = (f'Unable to validate against code {code}: code must be '
+                   f'either "mcnp" or "serpent".')
+            raise ValueError(msg)
+        self._code = code
+
+    @suffix.setter
+    def suffix(self, suffix):
+        match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)|[0][3,6,9]c|[1][2,5,8]c'
+        if not re.match(match, suffix):
+            msg = f'Unsupported cross section suffix {suffix}.'
+            raise ValueError(msg)
+        self._suffix = suffix
+
+    @library.setter
+    def library(self, library):
+        if library is not None:
+            library = Path(library)
+            if not library.is_dir():
+                msg = f'{library} is not a directory.'
+                raise ValueError(msg)
+        self._library = library
 
     def _create_library(self):
         """Convert the ACE data from the MCNP distribution into an HDF5 library
@@ -160,16 +196,22 @@ class Model(object):
                     table = openmc.data.ace.get_table(path, name)
                 except ValueError:
                     pass
-        else:
+        elif re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
             # Get the table from the ENDF/B-VII.1 neutron ACE files
             Z, A, m = openmc.data.zam(self.nuclide)
             element = openmc.data.ATOMIC_SYMBOL[Z]
             name = szax(self.nuclide, self.suffix)
             path = self.library / 'endf71x' / f'{element}' / f'{name}'
             table = openmc.data.ace.get_table(path, name)
+        else:
+            name = zaid(self.nuclide, self.suffix)
+            Z, A, m = openmc.data.zam(self.nuclide)
+            for path in self.library.glob(f'{1000*Z + A}*.ace'):
+                table = openmc.data.ace.get_table(path, name)
 
         # Convert cross section data
-        data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
+        scheme = 'mcnp' if self.code == 'mcnp' else 'nndc'
+        data = openmc.data.IncidentNeutron.from_ace(table, scheme)
         self._temperature = data.kTs[0] / openmc.data.K_BOLTZMANN
 
         # Export HDF5 file
@@ -200,7 +242,7 @@ class Model(object):
         materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
-        sphere = openmc.Sphere(boundary_type='reflective', r=1.e9)
+        sphere = openmc.Sphere(boundary_type='vacuum', r=1.e9)
         cell = openmc.Cell(fill=materials, region=-sphere)
         geometry = openmc.Geometry([cell])
         geometry.export_to_xml(Path('openmc') / 'geometry.xml')
@@ -216,14 +258,14 @@ class Model(object):
         if self._temperature is not None:
             settings.temperature = {'default': self._temperature}
         settings.source = source
-        settings.particles = self.particles
+        settings.particles = self.particles // 200
         settings.run_mode = 'fixed source'
-        settings.batches = 1
+        settings.batches = 200
         settings.create_fission_neutrons = False
         settings.export_to_xml(Path('openmc') / 'settings.xml')
  
         # Define tallies
-        energy_bins = np.logspace(-5, np.log10(self.energy), 500)
+        energy_bins = np.logspace(-5, np.log10(self.energy), self._n_bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
         tally = openmc.Tally(name='neutron flux')
         tally.filters = [energy_filter]
@@ -251,10 +293,10 @@ class Model(object):
         lines.append('2 0 1 imp:n=0')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
-        # radius and reflective boundary conditions
+        # radius and vacuum boundary conditions
         lines.append('')
         lines.append('c --- Surface cards ---')
-        lines.append('*1 so 1.0e9')
+        lines.append('+1 so 1.0e9')
  
         # Create the data cards
         lines.append('')
@@ -265,8 +307,7 @@ class Model(object):
             name = szax(self.nuclide, self.suffix)
         else:
             name = zaid(self.nuclide, self.suffix)
-        material_card = f'm1 {name} 1.0'
-        lines.append(material_card)
+        lines.append(f'm1 {name} 1.0')
         lines.append('nonu 2')
 
         # Physics: neutron transport
@@ -277,7 +318,7 @@ class Model(object):
  
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
-        lines.append(f'e4 1.e-11 498ilog {self.energy_mev}')
+        lines.append(f'e4 1.e-11 {self._n_bins-1}ilog {self.energy_mev}')
  
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -286,17 +327,83 @@ class Model(object):
         with open(Path('mcnp') / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
-    def _plot(self):
-        """Extract and plot the results
+    def _make_serpent_input(self):
+        """Generate the Serpent input file
+
+        """
+        # Directory from which Serpent will be run
+        os.makedirs('serpent', exist_ok=True)
+
+        # Create the problem description
+        lines = ['% Point source in infinite geometry']
+        lines.append('')
  
+        # Create the cell cards: material 1 inside sphere, void outside
+        lines.append('% --- Cell cards ---')
+        lines.append('cell 1 0 m1 -1')
+        lines.append('cell 2 0 outside 1')
+
+        # Create the surface cards: sphere centered on origin with 1e9 cm
+        # radius and vacuum boundary conditions
+        lines.append('')
+        lines.append('% --- Surface cards ---')
+        lines.append('surf 1 sph 0.0 0.0 0.0 1.0e9')
+
+        # Create the material cards
+        lines.append('')
+        lines.append('% --- Material cards ---')
+        name = zaid(self.nuclide, self.suffix)
+        #if self._temperature is not None:
+        #    lines.append(f'mat m1 -{self.density} tmp {self._temperature}')
+        #else:
+        lines.append(f'mat m1 -{self.density}')
+        lines.append(f'{name} 1.0')
+
+        # Turn on unresolved resonance probability treatment
+        lines.append('set ures 1')
+
+        # External source mode with isotropic point source at center of sphere
+        lines.append('')
+        lines.append('% --- Set external source mode ---')
+        lines.append(f'set nps {self.particles}')
+        lines.append(f'src 1 n se {self.energy_mev} sp 0.0 0.0 0.0')
+
+        # Detector definition: flux energy spectrum
+        lines.append('')
+        lines.append('% --- Detector definition ---')
+        lines.append('det 1 de 1 dc 1')
+
+        # Energy grid definition: equal lethargy spacing
+        lines.append(f'ene 1 3 {self._n_bins} 1.0e-11 {self.energy_mev}')
+
+        # Treat fission as capture
+        lines.append('')
+        lines.append('set nphys 0')
+
+        # Write the problem
+        with open(Path('serpent') / 'input', 'w') as f:
+            f.write('\n'.join(lines))
+
+    def _read_openmc_results(self):
+        """Extract the results from the OpenMC statepoint
+
         """
         # Read the results from the OpenMC statepoint
-        with openmc.StatePoint(Path('openmc') / 'statepoint.1.h5') as sp:
+        with openmc.StatePoint(Path('openmc') / 'statepoint.200.h5') as sp:
             t = sp.get_tally(name='neutron flux')
-            x_openmc = t.find_filter(openmc.EnergyFilter).bins[:,1]
-            y_openmc = t.mean[:,0,0]
+            x = t.find_filter(openmc.EnergyFilter).bins[:,1]
+            y = t.mean[:,0,0]
+            sd = t.std_dev[:,0,0]
  
-        # Read the results from the MCNP output file
+        # Normalize the spectrum
+        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+
+        return x, y, sd
+
+    def _read_mcnp_results(self):
+        """Extract the results from the MCNP output file
+
+        """
         with open(Path('mcnp') / 'outp', 'r') as f:
             text = f.read()
             p = text.find('1tally')
@@ -304,18 +411,48 @@ class Model(object):
             q = text.find('total', p)
             t = np.fromiter(text[p:q].split(), float)
             t.shape = (len(t) // 3, 3)
-            x_mcnp = t[1:,0] * 1.e6
-            y_mcnp = t[1:,1]
+            x = t[1:,0] * 1.e6
+            y = t[1:,1]
             sd = t[1:,2]
  
-        # Normalize the spectra
-        y_openmc /= np.diff(np.insert(x_openmc, 0, 1.e-5))*sum(y_openmc)
-        y_mcnp /= np.diff(np.insert(x_mcnp, 0, 1.e-5))*sum(y_mcnp)
+        # Normalize the spectrum
+        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+
+        return x, y, sd
+
+    def _read_serpent_results(self):
+        """Extract the results from the Serpent output file
+
+        """
+        with open(Path('serpent') / 'input_det0.m', 'r') as f:
+            text = f.read().split()
+            n = self._n_bins
+            t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
+            e = np.fromiter(text[7+12*n:7+15*n], float).reshape(n, 3)
+            x = e[:,1] * 1.e6
+            y = t[:,10]
+            sd = t[:,11]
+
+        # Normalize the spectrum
+        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+
+        return x, y, sd
+
+    def _plot(self):
+        """Extract and plot the results
  
+        """
+        # Read results
+        x1, y1, _ = self._read_openmc_results()
+        if self.code == 'serpent':
+            x2, y2, sd = self._read_serpent_results()
+        else:
+            x2, y2, sd = self._read_mcnp_results()
+
         # Compute the relative error
-        err = np.zeros_like(y_mcnp)
-        idx = np.where(y_mcnp > 0)
-        err[idx] = (y_openmc[idx] - y_mcnp[idx])/y_mcnp[idx]
+        err = np.zeros_like(y2)
+        idx = np.where(y2 > 0)
+        err[idx] = (y1[idx] - y2[idx])/y2[idx]
  
         # Set up the figure
         fig = plt.figure(1, facecolor='w', figsize=(8,8))
@@ -328,13 +465,14 @@ class Model(object):
         ax1.patch.set_visible(False)
  
         # Plot the spectra
-        ax1.loglog(x_mcnp, y_mcnp, 'r', linewidth=1, label='MCNP')
-        ax1.loglog(x_openmc, y_openmc, 'b', linewidth=1, label='OpenMC', linestyle='--')
+        label = 'Serpent' if self.code == 'serpent' else 'MCNP'
+        ax1.loglog(x2, y2, 'r', linewidth=1, label=label)
+        ax1.loglog(x1, y1, 'b', linewidth=1, label='OpenMC', linestyle='--')
  
         # Plot the relative error and uncertainties
-        ax2.semilogx(x_mcnp, err, color=(0.2, 0.8, 0.0), linewidth=1)
-        ax2.semilogx(x_mcnp, 2*sd, color='k', linestyle='--', linewidth=1)
-        ax2.semilogx(x_mcnp, -2*sd, color='k', linestyle='--', linewidth=1)
+        ax2.semilogx(x2, err, color=(0.2, 0.8, 0.0), linewidth=1)
+        ax2.semilogx(x2, 2*sd, color='k', linestyle='--', linewidth=1)
+        ax2.semilogx(x2, -2*sd, color='k', linestyle='--', linewidth=1)
  
         # Set grid and tick marks
         ax1.tick_params(axis='both', which='both', direction='in', length=10)
@@ -369,25 +507,32 @@ class Model(object):
         if self.library is not None:
             self._create_library()
 
-        self._make_openmc_input()
-        self._make_mcnp_input()
+        # Generate input files
+        if self.code == 'serpent':
+            self._make_serpent_input()
+            args = ['sss2', 'input']
+        else:
+            self._make_mcnp_input()
+            args = 'mcnp6'
 
-        openmc.run(cwd='openmc')
- 
-        # Remove old MCNP output files
-        for f in ('outp', 'runtpe'):
-            try:
-                os.remove(Path('mcnp') / f)
-            except OSError:
-                pass
- 
-        # Run MCNP and capture and print output
-        p = subprocess.Popen('mcnp6', cwd='mcnp', stdout=subprocess.PIPE,
+            # Remove old MCNP output files
+            for f in ('outp', 'runtpe'):
+                try:
+                    os.remove(Path('mcnp') / f)
+                except OSError:
+                    pass
+
+        self._make_openmc_input()
+
+        # Run code and capture and print output
+        p = subprocess.Popen(args, cwd=self.code, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, universal_newlines=True)
         while True:
             line = p.stdout.readline()
             if not line and p.poll() is not None:
                 break
             print(line, end='')
+
+        openmc.run(cwd='openmc')
 
         self._plot()
