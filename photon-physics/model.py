@@ -5,7 +5,6 @@ from pathlib import Path
 import re
 import subprocess
 
-import h5py
 from matplotlib import pyplot as plt
 import numpy as np
 from scipy.interpolate import CubicSpline

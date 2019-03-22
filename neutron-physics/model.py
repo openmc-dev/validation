@@ -29,15 +29,24 @@ def zaid(nuclide, suffix):
     """
     Z, A, m = openmc.data.zam(nuclide)
 
-    # Correct the ground state and first excited state of Am242, which are
-    # the reverse of the convention
-    if A == 242 and m == 0:
-        m = 1
-    elif A == 242 and m == 1:
-        m = 0
+    # Serpent metastable convention
+    if re.match('[0][3,6,9]c|[1][2,5,8]c', suffix):
+        # Increase mass number above 300
+        if m > 0:
+            while A < 300:
+                A += 100
 
-    if m > 0:
-        A += 300 + 100*m
+    # MCNP metastable convention
+    else:
+        # Correct the ground state and first excited state of Am242, which are
+        # the reverse of the convention
+        if A == 242 and m == 0:
+            m = 1
+        elif A == 242 and m == 1:
+            m = 0
+
+        if m > 0:
+            A += 300 + 100*m
 
     if re.match('(71[0-6]nc)', suffix):
         suffix = f'8{suffix[2]}c'
@@ -94,9 +103,9 @@ class Model(object):
     suffix : str
         Cross section suffix for MCNP
     library : str
-        Directory containing endf70[a-k] or endf71x MCNP ACE data library. If
-        specified, an HDF5 library that can be used by OpenMC will be created
-        from the MCNP data.
+        XSDIR directory file. If specified, it will be used to locate the ACE
+        table corresponding to the given nuclide and suffix, and an HDF5
+        library that can be used by OpenMC will be created from the data.
     name : str
         Name used for output.
 
@@ -115,22 +124,29 @@ class Model(object):
     suffix : str
         Cross section suffix for MCNP
     library : str
-        Directory containing endf70[a-k] or endf71x MCNP ACE data library. If
-        specified, an HDF5 library that can be used by OpenMC will be created
-        from the MCNP data.
+        XSDIR directory file. If specified, it will be used to locate the ACE
+        table corresponding to the given nuclide and suffix, and an HDF5
+        library that can be used by OpenMC will be created from the data.
     name : str
         Name used for output.
-    energy_mev : float
-        Energy of the source (MeV)
     temperature : float
         Temperature (Kelvin) of the cross section data
     n_bins : int
         Number of bins in the energy grid
+    batches : int
+        Number of batches to simulate
+    min_energy : float
+        Lower limit of energy grid (eV)
 
     """
 
     def __init__(self, nuclide, density, energy, particles, code, suffix,
                  library=None, name=None):
+        self._temperature = None
+        self._n_bins = 500
+        self._batches = 100
+        self._min_energy = 1.e-5
+
         self.nuclide = nuclide
         self.density = density
         self.energy = energy
@@ -139,8 +155,14 @@ class Model(object):
         self.suffix = suffix
         self.library = library
         self.name = name
-        self._temperature = None
-        self._n_bins = 500
+
+    @property
+    def energy(self):
+        return self._energy
+
+    @property
+    def particles(self):
+        return self._particles
 
     @property
     def code(self):
@@ -154,9 +176,21 @@ class Model(object):
     def library(self):
         return self._library
 
-    @property
-    def energy_mev(self):
-        return self.energy * 1.e-6
+    @energy.setter
+    def energy(self, energy):
+        if energy <= self._min_energy:
+            msg = (f'Energy {energy} eV is not above the minimum energy '
+                   f'{self._min_energy} eV.')
+            raise ValueError(msg)
+        self._energy = energy
+
+    @particles.setter
+    def particles(self, particles):
+        if particles % self._batches != 0:
+            msg = (f'Number of particles {particles} must be divisible by '
+                   f'the number of batches {self._batches}.')
+            raise ValueError(msg)
+        self._particles = particles
 
     @code.setter
     def code(self, code):
@@ -178,39 +212,81 @@ class Model(object):
     def library(self, library):
         if library is not None:
             library = Path(library)
-            if not library.is_dir():
-                msg = f'{library} is not a directory.'
+            if not library.is_file():
+                msg = f'XSDIR {library} is not a file.'
                 raise ValueError(msg)
         self._library = library
 
     def _create_library(self):
-        """Convert the ACE data from the MCNP distribution into an HDF5 library
-        that can be used by OpenMC.
+        """Convert the ACE data from the MCNP or Serpent distribution into an
+        HDF5 library that can be used by OpenMC.
 
         """
-        if re.match('7[0-4]c', self.suffix):
-            # Get the table from the ENDF/B-VII.0 neutron ACE files
-            name = zaid(self.nuclide, self.suffix)
-            for path in self.library.glob('endf70[a-k]'):
-                try:
-                    table = openmc.data.ace.get_table(path, name)
-                except ValueError:
-                    pass
-        elif re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            # Get the table from the ENDF/B-VII.1 neutron ACE files
+        # Get the name of the ACE table
+        name = zaid(self.nuclide, self.suffix)
+        path = None
+
+        # Get the location of the table from the XSDIR directory file
+        with open(self.library) as f:
+            # Read the datapath if it is specified
+            tokens = re.split('\s|=', f.readline())
+            if re.match('datapath', tokens[0], re.IGNORECASE):
+                path = Path(tokens[1])
+
+            # Locate the entry for the table
+            while tokens[0] != name:
+                line = f.readline()
+                if not line:
+                    msg = (f'Could not locate table {name} in XSDIR '
+                           f'{self.library}.')
+                    raise ValueError(msg)
+                tokens = line.split()
+
+            # Handle continuation lines
+            while line[-2] == '+':
+                line += f.readline()
+                tokens = line.replace('+\n', '').split()
+
+            # Read the access route if it is specified; otherwise, set the
+            # parent directory of XSDIR as the datapath
+            if path is None:
+                if tokens[3] != '0':
+                    path = Path(tokens[3])
+                else:
+                    path = self.library.parent
+
+            # Get the ace library
+            path = path / tokens[2]
+            if not path.is_file():
+                msg = f'ACE file {path} does not exist.'
+                raise ValueError(msg)
+
+        # Get the data needed to create the Serpent XSDATA directory file
+        if self.code == 'serpent':
+            AW = float(tokens[1]) * openmc.data.NEUTRON_MASS
+            T = float(tokens[9]) / openmc.data.K_BOLTZMANN * 1e6
             Z, A, m = openmc.data.zam(self.nuclide)
-            element = openmc.data.ATOMIC_SYMBOL[Z]
+            if tokens[4] != '1':
+                msg = f'File type {tokens[4]} not supported for {name}.'
+                raise ValueError(msg)
+            line = f'{name} {name} 1 {1000*Z + A} {m} {AW} {T} 0 {path}'
+
+            # Write the XSDATA file
+            with open(Path('serpent') / 'xsdata', 'w') as f:
+                f.write(line)
+
+        if re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
             name = szax(self.nuclide, self.suffix)
-            path = self.library / 'endf71x' / f'{element}' / f'{name}'
-            table = openmc.data.ace.get_table(path, name)
-        else:
-            name = zaid(self.nuclide, self.suffix)
-            Z, A, m = openmc.data.zam(self.nuclide)
-            for path in self.library.glob(f'{1000*Z + A}*.ace'):
-                table = openmc.data.ace.get_table(path, name)
+
+        # Get the ACE table
+        print(f'Converting table {name} from library {path}...')
+        table = openmc.data.ace.get_table(path, name)
 
         # Convert cross section data
-        scheme = 'mcnp' if self.code == 'mcnp' else 'nndc'
+        if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
+            scheme = 'mcnp'
+        else:
+            scheme = 'nndc'
         data = openmc.data.IncidentNeutron.from_ace(table, scheme)
         self._temperature = data.kTs[0] / openmc.data.K_BOLTZMANN
 
@@ -258,14 +334,15 @@ class Model(object):
         if self._temperature is not None:
             settings.temperature = {'default': self._temperature}
         settings.source = source
-        settings.particles = self.particles // 200
+        settings.particles = self.particles // self._batches
         settings.run_mode = 'fixed source'
-        settings.batches = 200
+        settings.batches = self._batches
         settings.create_fission_neutrons = False
         settings.export_to_xml(Path('openmc') / 'settings.xml')
  
         # Define tallies
-        energy_bins = np.logspace(-5, np.log10(self.energy), self._n_bins+1)
+        energy_bins = np.logspace(np.log10(self._min_energy),
+                                  np.log10(1.0001*self.energy), self._n_bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
         tally = openmc.Tally(name='neutron flux')
         tally.filters = [energy_filter]
@@ -282,7 +359,7 @@ class Model(object):
 
         # Create the problem description
         lines = ['Point source in infinite geometry']
- 
+
         # Create the cell cards: material 1 inside sphere, void outside
         lines.append('c --- Cell cards ---')
         if self._temperature is not None:
@@ -296,7 +373,7 @@ class Model(object):
         # radius and vacuum boundary conditions
         lines.append('')
         lines.append('c --- Surface cards ---')
-        lines.append('+1 so 1.0e9')
+        lines.append('+1 so 1.e9')
  
         # Create the data cards
         lines.append('')
@@ -314,11 +391,13 @@ class Model(object):
         lines.append('mode n')
  
         # Source definition: isotropic point source at center of sphere
-        lines.append(f'sdef cel=1 erg={self.energy_mev}')
+        energy = self.energy * 1e-6
+        lines.append(f'sdef cel=1 erg={energy}')
  
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
-        lines.append(f'e4 1.e-11 {self._n_bins-1}ilog {self.energy_mev}')
+        min_energy = self._min_energy * 1e-6
+        lines.append(f'e4 {min_energy} {self._n_bins-1}ilog {1.0001*energy}')
  
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -337,6 +416,12 @@ class Model(object):
         # Create the problem description
         lines = ['% Point source in infinite geometry']
         lines.append('')
+
+        # Set the cross section library directory
+        if self.library is not None:
+            xsdata = (Path('serpent') / 'xsdata').resolve()
+            lines.append(f'set acelib "{xsdata}"')
+            lines.append('')
  
         # Create the cell cards: material 1 inside sphere, void outside
         lines.append('% --- Cell cards ---')
@@ -347,15 +432,12 @@ class Model(object):
         # radius and vacuum boundary conditions
         lines.append('')
         lines.append('% --- Surface cards ---')
-        lines.append('surf 1 sph 0.0 0.0 0.0 1.0e9')
+        lines.append('surf 1 sph 0.0 0.0 0.0 1.e9')
 
         # Create the material cards
         lines.append('')
         lines.append('% --- Material cards ---')
         name = zaid(self.nuclide, self.suffix)
-        #if self._temperature is not None:
-        #    lines.append(f'mat m1 -{self.density} tmp {self._temperature}')
-        #else:
         lines.append(f'mat m1 -{self.density}')
         lines.append(f'{name} 1.0')
 
@@ -365,8 +447,9 @@ class Model(object):
         # External source mode with isotropic point source at center of sphere
         lines.append('')
         lines.append('% --- Set external source mode ---')
-        lines.append(f'set nps {self.particles}')
-        lines.append(f'src 1 n se {self.energy_mev} sp 0.0 0.0 0.0')
+        lines.append(f'set nps {self.particles} {self._batches}')
+        energy = self.energy * 1e-6
+        lines.append(f'src 1 n se {energy} sp 0.0 0.0 0.0')
 
         # Detector definition: flux energy spectrum
         lines.append('')
@@ -374,7 +457,8 @@ class Model(object):
         lines.append('det 1 de 1 dc 1')
 
         # Energy grid definition: equal lethargy spacing
-        lines.append(f'ene 1 3 {self._n_bins} 1.0e-11 {self.energy_mev}')
+        min_energy = self._min_energy * 1e-6
+        lines.append(f'ene 1 3 {self._n_bins} {min_energy} {1.0001*energy}')
 
         # Treat fission as capture
         lines.append('')
@@ -389,14 +473,15 @@ class Model(object):
 
         """
         # Read the results from the OpenMC statepoint
-        with openmc.StatePoint(Path('openmc') / 'statepoint.200.h5') as sp:
+        path = Path('openmc') / f'statepoint.{self._batches}.h5'
+        with openmc.StatePoint(path) as sp:
             t = sp.get_tally(name='neutron flux')
             x = t.find_filter(openmc.EnergyFilter).bins[:,1]
             y = t.mean[:,0,0]
             sd = t.std_dev[:,0,0]
- 
+
         # Normalize the spectrum
-        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+        y /= np.diff(np.insert(x, 0, self._min_energy))*sum(y)
 
         return x, y, sd
 
@@ -416,7 +501,7 @@ class Model(object):
             sd = t[1:,2]
  
         # Normalize the spectrum
-        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+        y /= np.diff(np.insert(x, 0, self._min_energy))*sum(y)
 
         return x, y, sd
 
@@ -434,7 +519,7 @@ class Model(object):
             sd = t[:,11]
 
         # Normalize the spectrum
-        y /= np.diff(np.insert(x, 0, 1.e-5))*sum(y)
+        y /= np.diff(np.insert(x, 0, self._min_energy))*sum(y)
 
         return x, y, sd
 
@@ -481,7 +566,7 @@ class Model(object):
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
  
         # Set axes labels and limits
-        ax1.set_xlim([1.e-5, self.energy])
+        ax1.set_xlim([self._min_energy, self.energy])
         ax1.set_xlabel('Energy (eV)', size=12)
         ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
@@ -513,7 +598,9 @@ class Model(object):
             args = ['sss2', 'input']
         else:
             self._make_mcnp_input()
-            args = 'mcnp6'
+            args = ['mcnp6']
+            if self.library is not None:
+                args.append(f'XSDIR={self.library}')
 
             # Remove old MCNP output files
             for f in ('outp', 'runtpe'):

@@ -19,9 +19,10 @@ parser.add_argument('-c', '--code', choices=['mcnp', 'serpent'], default='mcnp',
 parser.add_argument('-s', '--suffix', type=str, default='70c',
                     help='MCNP cross section suffix')
 parser.add_argument('-l', '--library', type=str,
-                    help='Directory containing endf70[a-k] or endf71x MCNP ACE '
-                    'data library. If specified, an HDF5 library that can be '
-                    'used by OpenMC will be created from the MCNP data.')
+                    help='XSDIR directory file. If specified, it will be used '
+                    'to locate the ACE table corresponding to the given '
+                    'nuclide and suffix, and an HDF5 library that can be used '
+                    'by OpenMC will be created from the data.')
 parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
 args = parser.parse_args()
 
