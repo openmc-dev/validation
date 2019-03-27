@@ -18,14 +18,18 @@ parser.add_argument('-c', '--code', choices=['mcnp', 'serpent'], default='mcnp',
                     help='Code to validate OpenMC against.')
 parser.add_argument('-s', '--suffix', type=str, default='70c',
                     help='MCNP cross section suffix')
-parser.add_argument('-l', '--library', type=str,
-                    help='XSDIR directory file. If specified, it will be used '
-                    'to locate the ACE table corresponding to the given '
-                    'nuclide and suffix, and an HDF5 library that can be used '
-                    'by OpenMC will be created from the data.')
+parser.add_argument('-l', '--library', type=str, help='XSDIR directory file. '
+                    'If specified, it will be used to locate the ACE table '
+                    'corresponding to the given nuclide and suffix, and an '
+                    'HDF5 library that can be used by OpenMC will be created '
+                    'from the data.')
 parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
+parser.add_argument('-t', '--thermal', type=str, help='ZAID of the thermal '
+                    'scattering data, e.g. "grph.10t". If specified, thermal '
+                    'scattering data will be assigned to the material.')
 args = parser.parse_args()
 
 m = model.Model(args.nuclide, args.density, args.energy, args.particles,
-                args.code, args.suffix, args.library, args.output_name)
+                args.code, args.suffix, args.library, args.output_name,
+                args.thermal)
 m.run()

@@ -3,86 +3,14 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-
-
-def zaid(nuclide, suffix):
-    """ZA identifier of the nuclide
-
-    Parameters
-    ----------
-    nuclide : str
-        Name of the nuclide
-    suffix : str
-        Cross section suffix for MCNP
-
-    Returns
-    -------
-    str
-        ZA identifier
-
-    """
-    Z, A, m = openmc.data.zam(nuclide)
-
-    # Serpent metastable convention
-    if re.match('[0][3,6,9]c|[1][2,5,8]c', suffix):
-        # Increase mass number above 300
-        if m > 0:
-            while A < 300:
-                A += 100
-
-    # MCNP metastable convention
-    else:
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if m > 0:
-            A += 300 + 100*m
-
-    if re.match('(71[0-6]nc)', suffix):
-        suffix = f'8{suffix[2]}c'
-
-    return f'{1000*Z + A}.{suffix}'
-
-
-def szax(nuclide, suffix):
-    """SZA identifier of the nuclide
-
-    Parameters
-    ----------
-    nuclide : str
-        Name of the nuclide
-    suffix : str
-        Cross section suffix for MCNP
-
-    Returns
-    -------
-    str
-        SZA identifier
-
-    """
-    Z, A, m = openmc.data.zam(nuclide)
-
-    # Correct the ground state and first excited state of Am242, which are
-    # the reverse of the convention
-    if A == 242 and m == 0:
-        m = 1
-    elif A == 242 and m == 1:
-        m = 0
-
-    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
-        suffix = f'71{suffix[1]}nc'
-
-    return f'{1000000*m + 1000*Z + A}.{suffix}'
+from openmc.data import K_BOLTZMANN, NEUTRON_MASS
 
 
 class Model(object):
@@ -108,6 +36,9 @@ class Model(object):
         library that can be used by OpenMC will be created from the data.
     name : str
         Name used for output.
+    thermal : str
+        ZAID of the thermal scattering data. If specified, thermal scattering
+        data will be assigned to the material.
 
     Attributes
     ----------
@@ -129,9 +60,12 @@ class Model(object):
         library that can be used by OpenMC will be created from the data.
     name : str
         Name used for output.
+    thermal : str
+        ZAID of the thermal scattering data. If specified, thermal scattering
+        data will be assigned to the material.
     temperature : float
         Temperature (Kelvin) of the cross section data
-    n_bins : int
+    bins : int
         Number of bins in the energy grid
     batches : int
         Number of batches to simulate
@@ -141,9 +75,9 @@ class Model(object):
     """
 
     def __init__(self, nuclide, density, energy, particles, code, suffix,
-                 library=None, name=None):
+                 library=None, name=None, thermal=None):
         self._temperature = None
-        self._n_bins = 500
+        self._bins = 500
         self._batches = 100
         self._min_energy = 1.e-5
 
@@ -155,6 +89,7 @@ class Model(object):
         self.suffix = suffix
         self.library = library
         self.name = name
+        self.thermal = thermal
 
     @property
     def energy(self):
@@ -176,6 +111,54 @@ class Model(object):
     def library(self):
         return self._library
 
+    @property
+    def zaid(self):
+        Z, A, m = openmc.data.zam(self.nuclide)
+
+        # Serpent metastable convention
+        if re.match('[0][3,6,9]c|[1][2,5,8]c', self.suffix):
+            # Increase mass number above 300
+            if m > 0:
+                while A < 300:
+                    A += 100
+
+        # MCNP metastable convention
+        else:
+            # Correct the ground state and first excited state of Am242, which
+            # are the reverse of the convention
+            if A == 242 and m == 0:
+                m = 1
+            elif A == 242 and m == 1:
+                m = 0
+
+            if m > 0:
+                A += 300 + 100*m
+
+        if re.match('(71[0-6]nc)', self.suffix):
+            suffix = f'8{self.suffix[2]}c'
+        else:
+            suffix = self.suffix
+
+        return f'{1000*Z + A}.{suffix}'
+
+    @property
+    def szax(self):
+        Z, A, m = openmc.data.zam(self.nuclide)
+
+        # Correct the ground state and first excited state of Am242, which are
+        # the reverse of the convention
+        if A == 242 and m == 0:
+            m = 1
+        elif A == 242 and m == 1:
+            m = 0
+
+        if re.match('(7[0-4]c)|(8[0-6]c)', self.suffix):
+            suffix = f'71{self.suffix[1]}nc'
+        else:
+            suffix = self.suffix
+
+        return f'{1000000*m + 1000*Z + A}.{suffix}'
+
     @energy.setter
     def energy(self, energy):
         if energy <= self._min_energy:
@@ -195,8 +178,12 @@ class Model(object):
     @code.setter
     def code(self, code):
         if code not in ['mcnp', 'serpent']:
-            msg = (f'Unable to validate against code {code}: code must be '
-                   f'either "mcnp" or "serpent".')
+            msg = (f'Unsupported code {code}: code must be either "mcnp" or '
+                   f'"serpent".')
+            raise ValueError(msg)
+        executable = 'mcnp6' if code == 'mcnp' else 'sss2'
+        if not shutil.which(executable, os.X_OK):
+            msg = f'Unable to locate executable {executable} in path.'
             raise ValueError(msg)
         self._code = code
 
@@ -222,61 +209,100 @@ class Model(object):
         HDF5 library that can be used by OpenMC.
 
         """
+        datapath = None
+        entry = None
+        thermal_entry = None
+
         # Get the name of the ACE table
-        name = zaid(self.nuclide, self.suffix)
-        path = None
+        name = self.zaid
 
         # Get the location of the table from the XSDIR directory file
         with open(self.library) as f:
             # Read the datapath if it is specified
-            tokens = re.split('\s|=', f.readline())
-            if re.match('datapath', tokens[0], re.IGNORECASE):
-                path = Path(tokens[1])
+            line = f.readline()
+            tokens = re.split('\s|=', line)
+            if tokens[0].lower() == 'datapath':
+                datapath = Path(tokens[1])
 
-            # Locate the entry for the table
-            while tokens[0] != name:
-                line = f.readline()
-                if not line:
-                    msg = (f'Could not locate table {name} in XSDIR '
-                           f'{self.library}.')
-                    raise ValueError(msg)
+            line = f.readline()
+            while line:
+                # Handle continuation lines
+                while line[-2] == '+':
+                    line += f.readline()
+                    line = line.replace('+\n', '')
+
                 tokens = line.split()
 
-            # Handle continuation lines
-            while line[-2] == '+':
-                line += f.readline()
-                tokens = line.replace('+\n', '').split()
+                # Locate the entry for the table
+                if tokens[0] == name:
+                    entry = tokens
 
-            # Read the access route if it is specified; otherwise, set the
-            # parent directory of XSDIR as the datapath
-            if path is None:
-                if tokens[3] != '0':
-                    path = Path(tokens[3])
-                else:
-                    path = self.library.parent
+                # Locate the entry for the S(alpha, beta) table if needed
+                elif self.thermal is not None and tokens[0] == self.thermal:
+                    thermal_entry = tokens
 
-            # Get the ace library
-            path = path / tokens[2]
-            if not path.is_file():
-                msg = f'ACE file {path} does not exist.'
+                # Check if we have found all entries
+                if ((self.thermal is None or thermal_entry is not None)
+                    and entry is not None):
+                    break
+
+                line = f.readline()
+
+        # Check that we found the library
+        if entry is None:
+            msg = f'Could not locate table {name} in XSDIR {self.library}.'
+            raise ValueError(msg)
+
+        # Get the access route if it is specified; otherwise, set the parent
+        # directory of XSDIR as the datapath
+        if datapath is None:
+            if entry[3] != '0':
+                datapath = Path(entry[3])
+            else:
+                datapath = self.library.parent
+
+        # Get the full path to the ace library
+        path = datapath / entry[2]
+        if not path.is_file():
+            msg = f'ACE file {path} does not exist.'
+            raise ValueError(msg)
+
+        if self.thermal is not None:
+            # Check that we found the thermal library
+            if thermal_entry is None:
+                msg = (f'Could not locate thermal scattering table '
+                       f'{self.thermal} in XSDIR {self.library}.')
                 raise ValueError(msg)
 
-        # Get the data needed to create the Serpent XSDATA directory file
+            # Get the full path to the thermal ace library
+            thermal_path = datapath / thermal_entry[2]
+            if not thermal_path.is_file():
+                msg = f'ACE file {thermal_path} does not exist.'
+                raise ValueError(msg)
+
+        # Create the Serpent XSDATA directory file
         if self.code == 'serpent':
-            AW = float(tokens[1]) * openmc.data.NEUTRON_MASS
-            T = float(tokens[9]) / openmc.data.K_BOLTZMANN * 1e6
-            Z, A, m = openmc.data.zam(self.nuclide)
-            if tokens[4] != '1':
-                msg = f'File type {tokens[4]} not supported for {name}.'
+            if entry[4] != '1':
+                msg = f'File type {entry[4]} not supported for {name}.'
                 raise ValueError(msg)
-            line = f'{name} {name} 1 {1000*Z + A} {m} {AW} {T} 0 {path}'
+            atomic_weight = float(entry[1]) * NEUTRON_MASS
+            temperature = float(entry[9]) / K_BOLTZMANN * 1e6
+            Z, A, m = openmc.data.zam(self.nuclide)
+            lines = [f'{name} {name} 1 {1000*Z + A} {m} {atomic_weight} '
+                     f'{temperature} 0 {path}']
+
+            # Add thermal data
+            if self.thermal is not None:
+                atomic_weight = float(thermal_entry[1]) * NEUTRON_MASS
+                lines.append(f'{self.thermal} {self.thermal} 3 0 0 '
+                             f'{atomic_weight} {temperature} 0 {thermal_path}')
 
             # Write the XSDATA file
             with open(Path('serpent') / 'xsdata', 'w') as f:
-                f.write(line)
+                f.write('\n'.join(lines))
 
         if re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            name = szax(self.nuclide, self.suffix)
+            name = self.szax
 
         # Get the ACE table
         print(f'Converting table {name} from library {path}...')
@@ -284,20 +310,35 @@ class Model(object):
 
         # Convert cross section data
         if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            scheme = 'mcnp'
+            data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
         else:
-            scheme = 'nndc'
-        data = openmc.data.IncidentNeutron.from_ace(table, scheme)
-        self._temperature = data.kTs[0] / openmc.data.K_BOLTZMANN
+            data = openmc.data.IncidentNeutron.from_ace(table, 'nndc')
+        self._temperature = data.kTs[0] / K_BOLTZMANN
 
-        # Export HDF5 file
+        # Create data library and directory for HDF5 files
+        data_lib = openmc.data.DataLibrary()
         os.makedirs('openmc', exist_ok=True)
+
+        # Export HDF5 files and register with library
         h5_file = Path('openmc') / f'{data.name}.h5'
         data.export_to_hdf5(h5_file, 'w')
-
-        # Register with library and write cross_sections.xml
-        data_lib = openmc.data.DataLibrary()
         data_lib.register_file(h5_file)
+
+        if self.thermal is not None:
+            # Get the thermal scattering ACE table
+            print(f'Converting table {self.thermal} from library '
+                  f'{thermal_path}...')
+            table = openmc.data.ace.get_table(thermal_path, self.thermal)
+
+            # Convert the thermal scattering data
+            data = openmc.data.ThermalScattering.from_ace(table)
+
+            # Export HDF5 files and register with library
+            h5_file = Path('openmc') / f'{data.name}.h5'
+            data.export_to_hdf5(h5_file, 'w')
+            data_lib.register_file(h5_file)
+
+        # Write cross_sections.xml
         data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
 
     def _make_openmc_input(self):
@@ -310,6 +351,10 @@ class Model(object):
         # Define material
         mat = openmc.Material()
         mat.add_nuclide(self.nuclide, 1.0)
+        if self.thermal is not None:
+            name, suffix = self.thermal.split('.')
+            thermal_name = openmc.data.thermal.get_thermal_name(name)
+            mat.add_s_alpha_beta(thermal_name)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.library is not None:
@@ -342,7 +387,7 @@ class Model(object):
  
         # Define tallies
         energy_bins = np.logspace(np.log10(self._min_energy),
-                                  np.log10(1.0001*self.energy), self._n_bins+1)
+                                  np.log10(1.0001*self.energy), self._bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
         tally = openmc.Tally(name='neutron flux')
         tally.filters = [energy_filter]
@@ -363,7 +408,7 @@ class Model(object):
         # Create the cell cards: material 1 inside sphere, void outside
         lines.append('c --- Cell cards ---')
         if self._temperature is not None:
-            kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
+            kT = self._temperature * K_BOLTZMANN * 1e-6
             lines.append(f'1 1 -{self.density} -1 imp:n=1 tmp={kT}')
         else:
             lines.append(f'1 1 -{self.density} -1 imp:n=1')
@@ -381,10 +426,12 @@ class Model(object):
  
         # Materials
         if re.match('(71[0-6]nc)', self.suffix):
-            name = szax(self.nuclide, self.suffix)
+            name = self.szax
         else:
-            name = zaid(self.nuclide, self.suffix)
+            name = self.zaid
         lines.append(f'm1 {name} 1.0')
+        if self.thermal is not None:
+            lines.append(f'mt1 {self.thermal}')
         lines.append('nonu 2')
 
         # Physics: neutron transport
@@ -397,7 +444,7 @@ class Model(object):
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
         min_energy = self._min_energy * 1e-6
-        lines.append(f'e4 {min_energy} {self._n_bins-1}ilog {1.0001*energy}')
+        lines.append(f'e4 {min_energy} {self._bins-1}ilog {1.0001*energy}')
  
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -437,12 +484,17 @@ class Model(object):
         # Create the material cards
         lines.append('')
         lines.append('% --- Material cards ---')
-        name = zaid(self.nuclide, self.suffix)
-        lines.append(f'mat m1 -{self.density}')
+        name = self.zaid
+        if self.thermal is not None:
+            Z, A, m = openmc.data.zam(self.nuclide)
+            lines.append(f'mat m1 -{self.density} moder t1 {1000*Z + A}')
+        else:
+            lines.append(f'mat m1 -{self.density}')
         lines.append(f'{name} 1.0')
 
-        # Turn on unresolved resonance probability treatment
-        lines.append('set ures 1')
+        # Add thermal scattering library associated with the nuclide
+        if self.thermal is not None:
+            lines.append(f'therm t1 {self.thermal}')
 
         # External source mode with isotropic point source at center of sphere
         lines.append('')
@@ -458,11 +510,14 @@ class Model(object):
 
         # Energy grid definition: equal lethargy spacing
         min_energy = self._min_energy * 1e-6
-        lines.append(f'ene 1 3 {self._n_bins} {min_energy} {1.0001*energy}')
+        lines.append(f'ene 1 3 {self._bins} {min_energy} {1.0001*energy}')
 
         # Treat fission as capture
         lines.append('')
         lines.append('set nphys 0')
+
+        # Turn on unresolved resonance probability treatment
+        lines.append('set ures 1')
 
         # Write the problem
         with open(Path('serpent') / 'input', 'w') as f:
@@ -511,7 +566,7 @@ class Model(object):
         """
         with open(Path('serpent') / 'input_det0.m', 'r') as f:
             text = f.read().split()
-            n = self._n_bins
+            n = self._bins
             t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
             e = np.fromiter(text[7+12*n:7+15*n], float).reshape(n, 3)
             x = e[:,1] * 1.e6
@@ -571,7 +626,12 @@ class Model(object):
         ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
-        title = f'{self.nuclide}, {self.energy:.1e} eV Source'
+        title = f'{self.nuclide}'
+        if self.thermal is not None:
+            name, suffix = self.thermal.split('.')
+            thermal_name = openmc.data.thermal.get_thermal_name(name)
+            title += f' + {thermal_name}'
+        title += f', {self.energy:.1e} eV Source'
         plt.title(title)
  
         # Save plot
@@ -579,7 +639,10 @@ class Model(object):
         if self.name is not None:
             name = self.name
         else:
-            name = f'{self.nuclide}-{self.energy:.1e}eV'
+            name = f'{self.nuclide}'
+            if self.thermal is not None:
+                name += f'-{thermal_name}'
+            name += f'-{self.energy:.1e}eV'
             if self._temperature is not None:
                 name +=  f'-{self._temperature:.1f}K'
         plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
