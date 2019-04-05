@@ -29,7 +29,7 @@ class Model(object):
     code : {'mcnp', 'serpent'}
         Code to validate against
     suffix : str
-        Cross section suffix for MCNP
+        Cross section suffix
     library : str
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
@@ -310,9 +310,10 @@ class Model(object):
 
         # Convert cross section data
         if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            data = openmc.data.IncidentNeutron.from_ace(table, 'mcnp')
+            scheme = 'mcnp'
         else:
-            data = openmc.data.IncidentNeutron.from_ace(table, 'nndc')
+            scheme = 'nndc'
+        data = openmc.data.IncidentNeutron.from_ace(table, scheme)
         self._temperature = data.kTs[0] / K_BOLTZMANN
 
         # Create data library and directory for HDF5 files
@@ -413,15 +414,15 @@ class Model(object):
         else:
             lines.append(f'1 1 -{self.density} -1 imp:n=1')
         lines.append('2 0 1 imp:n=0')
+        lines.append('')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
         # radius and vacuum boundary conditions
-        lines.append('')
         lines.append('c --- Surface cards ---')
         lines.append('+1 so 1.e9')
+        lines.append('')
  
         # Create the data cards
-        lines.append('')
         lines.append('c --- Data cards ---')
  
         # Materials
@@ -474,15 +475,15 @@ class Model(object):
         lines.append('% --- Cell cards ---')
         lines.append('cell 1 0 m1 -1')
         lines.append('cell 2 0 outside 1')
+        lines.append('')
 
         # Create the surface cards: sphere centered on origin with 1e9 cm
         # radius and vacuum boundary conditions
-        lines.append('')
         lines.append('% --- Surface cards ---')
         lines.append('surf 1 sph 0.0 0.0 0.0 1.e9')
+        lines.append('')
 
         # Create the material cards
-        lines.append('')
         lines.append('% --- Material cards ---')
         name = self.zaid
         if self.thermal is not None:
@@ -495,25 +496,25 @@ class Model(object):
         # Add thermal scattering library associated with the nuclide
         if self.thermal is not None:
             lines.append(f'therm t1 {self.thermal}')
+        lines.append('')
 
         # External source mode with isotropic point source at center of sphere
-        lines.append('')
         lines.append('% --- Set external source mode ---')
         lines.append(f'set nps {self.particles} {self._batches}')
         energy = self.energy * 1e-6
         lines.append(f'src 1 n se {energy} sp 0.0 0.0 0.0')
+        lines.append('')
 
         # Detector definition: flux energy spectrum
-        lines.append('')
         lines.append('% --- Detector definition ---')
         lines.append('det 1 de 1 dc 1')
 
         # Energy grid definition: equal lethargy spacing
         min_energy = self._min_energy * 1e-6
         lines.append(f'ene 1 3 {self._bins} {min_energy} {1.0001*energy}')
+        lines.append('')
 
         # Treat fission as capture
-        lines.append('')
         lines.append('set nphys 0')
 
         # Turn on unresolved resonance probability treatment
