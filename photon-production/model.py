@@ -5,11 +5,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from warnings import warn
 
 from matplotlib import pyplot as plt
 import numpy as np
-from scipy.interpolate import CubicSpline
 
 import openmc
 from openmc.data import K_BOLTZMANN, NEUTRON_MASS
@@ -396,14 +394,14 @@ class Model(object):
             data.export_to_hdf5(h5_file, 'w')
             data_lib.register_file(h5_file)
 
+        # Write cross_sections.xml
+        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
+
         # Write the Serpent XSDATA file
         if self.code == 'serpent':
             os.makedirs('serpent', exist_ok=True)
             with open(Path('serpent') / 'xsdata', 'w') as f:
                 f.write('\n'.join(lines))
-
-        # Write cross_sections.xml
-        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
