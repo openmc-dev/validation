@@ -34,11 +34,11 @@ class Model(object):
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
-    name : str
-        Name used for output.
     thermal : str
         ZAID of the thermal scattering data. If specified, thermal scattering
         data will be assigned to the material.
+    name : str
+        Name used for output.
 
     Attributes
     ----------
@@ -58,11 +58,11 @@ class Model(object):
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
-    name : str
-        Name used for output.
     thermal : str
         ZAID of the thermal scattering data. If specified, thermal scattering
         data will be assigned to the material.
+    name : str
+        Name used for output.
     temperature : float
         Temperature (Kelvin) of the cross section data
     bins : int
@@ -75,7 +75,7 @@ class Model(object):
     """
 
     def __init__(self, nuclide, density, energy, particles, code, suffix,
-                 library=None, name=None, thermal=None):
+                 library=None, thermal=None, name=None):
         self._temperature = None
         self._bins = 500
         self._batches = 100
@@ -88,8 +88,8 @@ class Model(object):
         self.code = code
         self.suffix = suffix
         self.library = library
-        self.name = name
         self.thermal = thermal
+        self.name = name
 
     @property
     def energy(self):
@@ -162,7 +162,7 @@ class Model(object):
     @energy.setter
     def energy(self, energy):
         if energy <= self._min_energy:
-            msg = (f'Energy {energy} eV is not above the minimum energy '
+            msg = (f'Energy {energy} eV must be above the minimum energy '
                    f'{self._min_energy} eV.')
             raise ValueError(msg)
         self._energy = energy
@@ -200,7 +200,7 @@ class Model(object):
         if library is not None:
             library = Path(library)
             if not library.is_file():
-                msg = f'XSDIR {library} is not a file.'
+                msg = f'Could not locate the XSDIR file {library}.'
                 raise ValueError(msg)
         self._library = library
 
@@ -209,12 +209,11 @@ class Model(object):
         HDF5 library that can be used by OpenMC.
 
         """
+        # Get the names of the ACE tables used in the model
         datapath = None
-        entry = None
-        thermal_entry = None
-
-        # Get the name of the ACE table
-        name = self.zaid
+        entries = {self.zaid: None}
+        if self.thermal is not None:
+            entries[self.thermal] = None
 
         # Get the location of the table from the XSDIR directory file
         with open(self.library) as f:
@@ -233,106 +232,79 @@ class Model(object):
 
                 tokens = line.split()
 
-                # Locate the entry for the table
-                if tokens[0] == name:
-                    entry = tokens
-
-                # Locate the entry for the S(alpha, beta) table if needed
-                elif self.thermal is not None and tokens[0] == self.thermal:
-                    thermal_entry = tokens
+                # Store the entry if we need this table
+                if tokens[0] in entries.keys():
+                    entries[tokens[0]] = tokens
 
                 # Check if we have found all entries
-                if ((self.thermal is None or thermal_entry is not None)
-                    and entry is not None):
+                if None not in entries.values():
                     break
 
                 line = f.readline()
-
-        # Check that we found the library
-        if entry is None:
-            msg = f'Could not locate table {name} in XSDIR {self.library}.'
-            raise ValueError(msg)
-
-        # Get the access route if it is specified; otherwise, set the parent
-        # directory of XSDIR as the datapath
-        if datapath is None:
-            if entry[3] != '0':
-                datapath = Path(entry[3])
-            else:
-                datapath = self.library.parent
-
-        # Get the full path to the ace library
-        path = datapath / entry[2]
-        if not path.is_file():
-            msg = f'ACE file {path} does not exist.'
-            raise ValueError(msg)
-
-        if self.thermal is not None:
-            # Check that we found the thermal library
-            if thermal_entry is None:
-                msg = (f'Could not locate thermal scattering table '
-                       f'{self.thermal} in XSDIR {self.library}.')
-                raise ValueError(msg)
-
-            # Get the full path to the thermal ace library
-            thermal_path = datapath / thermal_entry[2]
-            if not thermal_path.is_file():
-                msg = f'ACE file {thermal_path} does not exist.'
-                raise ValueError(msg)
-
-        # Create the Serpent XSDATA directory file
-        if self.code == 'serpent':
-            if entry[4] != '1':
-                msg = f'File type {entry[4]} not supported for {name}.'
-                raise ValueError(msg)
-            atomic_weight = float(entry[1]) * NEUTRON_MASS
-            temperature = float(entry[9]) / K_BOLTZMANN * 1e6
-            Z, A, m = openmc.data.zam(self.nuclide)
-            lines = [f'{name} {name} 1 {1000*Z + A} {m} {atomic_weight} '
-                     f'{temperature} 0 {path}']
-
-            # Add thermal data
-            if self.thermal is not None:
-                atomic_weight = float(thermal_entry[1]) * NEUTRON_MASS
-                lines.append(f'{self.thermal} {self.thermal} 3 0 0 '
-                             f'{atomic_weight} {temperature} 0 {thermal_path}')
-
-            # Write the XSDATA file
-            with open(Path('serpent') / 'xsdata', 'w') as f:
-                f.write('\n'.join(lines))
-
-        if re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            name = self.szax
-
-        # Get the ACE table
-        print(f'Converting table {name} from library {path}...')
-        table = openmc.data.ace.get_table(path, name)
-
-        # Convert cross section data
-        if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
-            scheme = 'mcnp'
-        else:
-            scheme = 'nndc'
-        data = openmc.data.IncidentNeutron.from_ace(table, scheme)
-        self._temperature = data.kTs[0] / K_BOLTZMANN
 
         # Create data library and directory for HDF5 files
         data_lib = openmc.data.DataLibrary()
         os.makedirs('openmc', exist_ok=True)
 
-        # Export HDF5 files and register with library
-        h5_file = Path('openmc') / f'{data.name}.h5'
-        data.export_to_hdf5(h5_file, 'w')
-        data_lib.register_file(h5_file)
+        lines = []
+        for name, entry in entries.items():
+            if entry is None:
+                msg = f'Could not locate table {name} in XSDIR {self.library}.'
+                raise ValueError(msg)
 
-        if self.thermal is not None:
-            # Get the thermal scattering ACE table
-            print(f'Converting table {self.thermal} from library '
-                  f'{thermal_path}...')
-            table = openmc.data.ace.get_table(thermal_path, self.thermal)
+            # Get the access route if it is specified; otherwise, set the parent
+            # directory of XSDIR as the datapath
+            if datapath is None:
+                if entry[3] != '0':
+                    datapath = Path(entry[3])
+                else:
+                    datapath = self.library.parent
 
-            # Convert the thermal scattering data
-            data = openmc.data.ThermalScattering.from_ace(table)
+            # Get the full path to the ace library
+            path = datapath / entry[2]
+            if not path.is_file():
+                msg = f'ACE file {path} does not exist.'
+                raise ValueError(msg)
+
+            # Determine if this is a neutron cross section table
+            neutron = name[-1] == 'c'
+
+            # Get the data needed for the Serpent XSDATA directory file
+            if self.code == 'serpent':
+                atomic_weight = float(entry[1]) * NEUTRON_MASS
+                temperature = float(entry[9]) / K_BOLTZMANN * 1e6
+
+                # Neutron table
+                if neutron:
+                    if entry[4] != '1':
+                        msg = f'File type {entry[4]} not supported for {name}.'
+                        raise ValueError(msg)
+                    Z, A, m = openmc.data.zam(self.nuclide)
+                    lines.append(f'{name} {name} 1 {1000*Z + A} {m} '
+                                 f'{atomic_weight} {temperature} 0 {path}')
+                # S(alpha, beta) table
+                else:
+                    lines.append(f'{name} {name} 3 0 0 {atomic_weight} '
+                                 f'{temperature} 0 {path}')
+
+            if neutron and re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
+                name = self.szax
+
+            # Get the ACE table
+            print(f'Converting table {name} from library {path}...')
+            table = openmc.data.ace.get_table(path, name)
+
+            # Convert cross section data
+            if neutron:
+                if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
+                    scheme = 'mcnp'
+                else:
+                    scheme = 'nndc'
+                data = openmc.data.IncidentNeutron.from_ace(table, scheme)
+                if self._temperature is None:
+                    self._temperature = data.kTs[0] / K_BOLTZMANN
+            else:
+                data = openmc.data.ThermalScattering.from_ace(table)
 
             # Export HDF5 files and register with library
             h5_file = Path('openmc') / f'{data.name}.h5'
@@ -341,6 +313,12 @@ class Model(object):
 
         # Write cross_sections.xml
         data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
+
+        # Write the Serpent XSDATA file
+        if self.code == 'serpent':
+            os.makedirs('serpent', exist_ok=True)
+            with open(Path('serpent') / 'xsdata', 'w') as f:
+                f.write('\n'.join(lines))
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML

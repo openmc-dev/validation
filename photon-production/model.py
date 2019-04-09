@@ -259,7 +259,7 @@ class Model(object):
         if library is not None:
             library = Path(library)
             if not library.is_file():
-                msg = f'XSDIR {library} is not a file.'
+                msg = f'Could not locate the XSDIR file {library}.'
                 raise ValueError(msg)
         self._library = library
 
@@ -272,8 +272,8 @@ class Model(object):
                 raise ValueError(msg)
             serpent_pdata = Path(serpent_pdata).resolve()
             if not serpent_pdata.is_dir():
-                msg = (f'Serpent photon data path {serpent_pdata} is not a '
-                       f'directory.')
+                msg = (f'Could not locate the Serpent photon data directory '
+                       f'{serpent_pdata}.')
                 raise ValueError(msg)
         self._serpent_pdata = serpent_pdata
 

@@ -23,13 +23,13 @@ parser.add_argument('-l', '--library', type=str, help='XSDIR directory file. '
                     'corresponding to the given nuclide and suffix, and an '
                     'HDF5 library that can be used by OpenMC will be created '
                     'from the data.')
-parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
 parser.add_argument('-t', '--thermal', type=str, help='ZAID of the thermal '
                     'scattering data, e.g. "grph.10t". If specified, thermal '
                     'scattering data will be assigned to the material.')
+parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
 args = parser.parse_args()
 
 m = model.Model(args.nuclide, args.density, args.energy, args.particles,
-                args.code, args.suffix, args.library, args.output_name,
-                args.thermal)
+                args.code, args.suffix, args.library, args.thermal,
+                args.output_name)
 m.run()

@@ -130,7 +130,7 @@ class Model(object):
     @energy.setter
     def energy(self, energy):
         if energy <= self._cutoff_energy:
-            msg = (f'Energy {energy} eV is not above the cutoff energy '
+            msg = (f'Energy {energy} eV must be above the cutoff energy '
                    f'{self._cutoff_energy} eV.')
             raise ValueError(msg)
         self._energy = energy
@@ -167,7 +167,7 @@ class Model(object):
         if library is not None:
             library = Path(library)
             if not library.is_file():
-                msg = f'XSDIR {library} is not a file.'
+                msg = f'Could not locate the XSDIR file {library}.'
                 raise ValueError(msg)
         self._library = library
 
@@ -180,8 +180,8 @@ class Model(object):
                 raise ValueError(msg)
             serpent_pdata = Path(serpent_pdata).resolve()
             if not serpent_pdata.is_dir():
-                msg = (f'Serpent photon data path {serpent_pdata} is not a '
-                       f'directory.')
+                msg = (f'Could not locate the Serpent photon data directory '
+                       f'{serpent_pdata}.')
                 raise ValueError(msg)
         self._serpent_pdata = serpent_pdata
 
@@ -358,10 +358,10 @@ class Model(object):
         lines.append('2 0 1 imp:p=0')
  
         # Create the surface cards: sphere centered on origin with 1e9 cm
-        # radius and  reflective boundary conditions
+        # radius and vacuum boundary conditions
         lines.append('')
         lines.append('c --- Surface cards ---')
-        lines.append('*1 so 1.0e9')
+        lines.append('+1 so 1.0e9')
  
         # Create the data cards
         lines.append('')
