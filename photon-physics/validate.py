@@ -22,7 +22,7 @@ parser.add_argument('-c', '--code', choices=['mcnp', 'serpent'], default='mcnp',
                     help='Code to validate OpenMC against.')
 parser.add_argument('-s', '--suffix', default='12p',
                     help='Photon cross section suffix')
-parser.add_argument('-l', '--library', type=str, help='XSDIR directory file. '
+parser.add_argument('-x', '--xsdir', type=str, help='XSDIR directory file. '
                     'If specified, it will be used to locate the ACE table '
                     'corresponding to the given element and suffix, and an '
                     'HDF5 library that can be used by OpenMC will be created '
@@ -35,5 +35,5 @@ args = parser.parse_args()
 
 m = model.Model(args.element, args.density, [(args.element, 1.)], args.energy,
                 args.particles, args.electron_treatment, args.code, args.suffix,
-                args.library, args.serpent_pdata, args.output_name)
+                args.xsdir, args.serpent_pdata, args.output_name)
 m.run()

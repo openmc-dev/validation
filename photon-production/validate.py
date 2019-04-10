@@ -24,7 +24,7 @@ parser.add_argument('-s', '--suffix', default='70c',
                     help='Neutron cross section suffix')
 parser.add_argument('-k', '--photon-suffix', default='12p',
                     help='Photon cross section suffix')
-parser.add_argument('-l', '--library', type=str, help='XSDIR directory file. '
+parser.add_argument('-x', '--xsdir', type=str, help='XSDIR directory file. '
                     'If specified, it will be used to locate the ACE table '
                     'corresponding to the given nuclide and suffix, and an '
                     'HDF5 library that can be used by OpenMC will be created '
@@ -37,6 +37,6 @@ args = parser.parse_args()
 
 m = model.Model(args.nuclide, args.density, [(args.nuclide, 1.)], args.energy,
                 args.particles, args.electron_treatment, args.code,
-                args.suffix, args.photon_suffix, args.library, args.serpent_pdata,
+                args.suffix, args.photon_suffix, args.xsdir, args.serpent_pdata,
                 args.output_name)
 m.run()

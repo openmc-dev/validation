@@ -113,7 +113,7 @@ class Model(object):
         Neutron cross section suffix
     photon_suffix : str
         Photon cross section suffix
-    library : str
+    xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
@@ -145,7 +145,7 @@ class Model(object):
         Neutron cross section suffix
     photon_suffix : str
         Photon cross section suffix
-    library : str
+    xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
@@ -168,7 +168,7 @@ class Model(object):
     """
 
     def __init__(self, material, density, nuclides, energy, particles,
-                 electron_treatment, code, suffix, photon_suffix, library=None,
+                 electron_treatment, code, suffix, photon_suffix, xsdir=None,
                  serpent_pdata=None, name=None):
         self._temperature = None
         self._bins = 500
@@ -184,7 +184,7 @@ class Model(object):
         self.code = code
         self.suffix = suffix
         self.photon_suffix = photon_suffix
-        self.library = library
+        self.xsdir = xsdir
         self.serpent_pdata = serpent_pdata
         self.name = name
 
@@ -205,8 +205,8 @@ class Model(object):
         return self._photon_suffix
 
     @property
-    def library(self):
-        return self._library
+    def xsdir(self):
+        return self._xsdir
 
     @property
     def serpent_pdata(self):
@@ -229,9 +229,9 @@ class Model(object):
 
     @code.setter
     def code(self, code):
-        if code not in ['mcnp', 'serpent']:
+        if code not in ('mcnp', 'serpent'):
             msg = (f'Unsupported code {code}: code must be either "mcnp" or '
-                   f'"serpent".')
+                   '"serpent".')
             raise ValueError(msg)
         executable = 'mcnp6' if code == 'mcnp' else 'sss2'
         if not shutil.which(executable, os.X_OK):
@@ -249,19 +249,19 @@ class Model(object):
 
     @photon_suffix.setter
     def photon_suffix(self, photon_suffix):
-        if not re.match('0[1-4]p|12p', photon_suffix):
+        if not re.match('0[1-4]p|63p|84p|12p', photon_suffix):
             msg = f'Unsupported photon cross section suffix {photon_suffix}.'
             raise ValueError(msg)
         self._photon_suffix = photon_suffix
 
-    @library.setter
-    def library(self, library):
-        if library is not None:
-            library = Path(library)
-            if not library.is_file():
-                msg = f'Could not locate the XSDIR file {library}.'
+    @xsdir.setter
+    def xsdir(self, xsdir):
+        if xsdir is not None:
+            xsdir = Path(xsdir)
+            if not xsdir.is_file():
+                msg = f'Could not locate the XSDIR file {xsdir}.'
                 raise ValueError(msg)
-        self._library = library
+        self._xsdir = xsdir
 
     @serpent_pdata.setter
     def serpent_pdata(self, serpent_pdata):
@@ -300,7 +300,7 @@ class Model(object):
             ZA[name] = 1000*Z
 
         # Get the location of the tables from the XSDIR directory file
-        with open(self.library) as f:
+        with open(self.xsdir) as f:
             # Read the datapath if it is specified
             line = f.readline()
             tokens = re.split('\s|=', line)
@@ -333,7 +333,7 @@ class Model(object):
         lines = []
         for name, entry in entries.items():
             if entry is None:
-                msg = f'Could not locate table {name} in XSDIR {self.library}.'
+                msg = f'Could not locate table {name} in XSDIR {self.xsdir}.'
                 raise ValueError(msg)
 
             # Get the access route if it is specified; otherwise, set the parent
@@ -342,7 +342,7 @@ class Model(object):
                 if entry[3] != '0':
                     datapath = Path(entry[3])
                 else:
-                    datapath = self.library.parent
+                    datapath = self.xsdir.parent
 
             # Get the full path to the ace library
             path = datapath / entry[2]
@@ -416,7 +416,7 @@ class Model(object):
             mat.add_nuclide(nuclide, fraction)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
-        if self.library is not None:
+        if self.xsdir is not None:
             xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
         materials.export_to_xml(Path('openmc') / 'materials.xml')
@@ -485,7 +485,7 @@ class Model(object):
 
         # Create the problem description
         lines = ['Broomstick problem']
- 
+
         # Create the cell cards: material 1 inside cylinder, void outside
         lines.append('c --- Cell cards ---')
         if self._temperature is not None:
@@ -496,7 +496,7 @@ class Model(object):
         lines.append('2 0 -4 5 -6 imp:n,p=1')
         lines.append('3 0 #(-4 5 -7) imp:n,p=0')
         lines.append('')
- 
+
         # Create the surface cards: cylinder with radius 1e-6 cm along x-axis
         lines.append('c --- Surface cards ---')
         lines.append('4 cx 1.0e-6')
@@ -504,10 +504,10 @@ class Model(object):
         lines.append('6 px 1.0')
         lines.append('7 px 1.0e9')
         lines.append('')
- 
+
         # Create the data cards
         lines.append('c --- Data cards ---')
- 
+
         # Materials
         material_card = 'm1'
         for nuclide, fraction in self.nuclides:
@@ -517,7 +517,7 @@ class Model(object):
                 name = zaid(nuclide, self.suffix)
             material_card += f' {name} -{fraction} plib={self.photon_suffix}'
         lines.append(material_card)
- 
+
         # Energy in MeV
         energy = self.energy * 1e-6
         max_energy = self.max_energy * 1e-6
@@ -535,14 +535,14 @@ class Model(object):
         # Source definition: point source at origin monodirectional along
         # positive x-axis
         lines.append(f'sdef cel=2 erg={energy} vec=1 0 0 dir=1 par=1')
- 
+
         # Tallies: Photon current over surface
         lines.append('f1:p 4')
         lines.append(f'e1 {cutoff_energy} {self._bins-1}ilog {max_energy}')
- 
+
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
- 
+
         # Write the problem
         with open(Path('mcnp') / 'inp', 'w') as f:
             f.write('\n'.join(lines))
@@ -559,7 +559,7 @@ class Model(object):
         lines.append('')
  
         # Set the cross section library directory
-        if self.library is not None:
+        if self.xsdir is not None:
             xsdata = (Path('serpent') / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
 
@@ -780,7 +780,7 @@ class Model(object):
         """Generate inputs, run problem, and plot results.
  
         """
-        if self.library is not None:
+        if self.xsdir is not None:
             self._create_library()
 
         # Generate input files
@@ -790,8 +790,8 @@ class Model(object):
         else:
             self._make_mcnp_input()
             args = ['mcnp6']
-            if self.library is not None:
-                args.append(f'XSDIR={self.library}')
+            if self.xsdir is not None:
+                args.append(f'XSDIR={self.xsdir}')
 
             # Remove old MCNP output files
             for f in ('outp', 'runtpe'):

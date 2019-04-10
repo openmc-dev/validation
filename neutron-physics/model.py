@@ -30,7 +30,7 @@ class Model(object):
         Code to validate against
     suffix : str
         Cross section suffix
-    library : str
+    xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
@@ -54,7 +54,7 @@ class Model(object):
         Code to validate against
     suffix : str
         Cross section suffix for MCNP
-    library : str
+    xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
         table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
@@ -75,7 +75,7 @@ class Model(object):
     """
 
     def __init__(self, nuclide, density, energy, particles, code, suffix,
-                 library=None, thermal=None, name=None):
+                 xsdir=None, thermal=None, name=None):
         self._temperature = None
         self._bins = 500
         self._batches = 100
@@ -87,7 +87,7 @@ class Model(object):
         self.particles = particles
         self.code = code
         self.suffix = suffix
-        self.library = library
+        self.xsdir = xsdir
         self.thermal = thermal
         self.name = name
 
@@ -108,8 +108,8 @@ class Model(object):
         return self._suffix
 
     @property
-    def library(self):
-        return self._library
+    def xsdir(self):
+        return self._xsdir
 
     @property
     def zaid(self):
@@ -177,9 +177,9 @@ class Model(object):
 
     @code.setter
     def code(self, code):
-        if code not in ['mcnp', 'serpent']:
+        if code not in ('mcnp', 'serpent'):
             msg = (f'Unsupported code {code}: code must be either "mcnp" or '
-                   f'"serpent".')
+                   '"serpent".')
             raise ValueError(msg)
         executable = 'mcnp6' if code == 'mcnp' else 'sss2'
         if not shutil.which(executable, os.X_OK):
@@ -195,14 +195,14 @@ class Model(object):
             raise ValueError(msg)
         self._suffix = suffix
 
-    @library.setter
-    def library(self, library):
-        if library is not None:
-            library = Path(library)
-            if not library.is_file():
-                msg = f'Could not locate the XSDIR file {library}.'
+    @xsdir.setter
+    def xsdir(self, xsdir):
+        if xsdir is not None:
+            xsdir = Path(xsdir)
+            if not xsdir.is_file():
+                msg = f'Could not locate the XSDIR file {xsdir}.'
                 raise ValueError(msg)
-        self._library = library
+        self._xsdir = xsdir
 
     def _create_library(self):
         """Convert the ACE data from the MCNP or Serpent distribution into an
@@ -216,7 +216,7 @@ class Model(object):
             entries[self.thermal] = None
 
         # Get the location of the table from the XSDIR directory file
-        with open(self.library) as f:
+        with open(self.xsdir) as f:
             # Read the datapath if it is specified
             line = f.readline()
             tokens = re.split('\s|=', line)
@@ -249,7 +249,7 @@ class Model(object):
         lines = []
         for name, entry in entries.items():
             if entry is None:
-                msg = f'Could not locate table {name} in XSDIR {self.library}.'
+                msg = f'Could not locate table {name} in XSDIR {self.xsdir}.'
                 raise ValueError(msg)
 
             # Get the access route if it is specified; otherwise, set the parent
@@ -258,7 +258,7 @@ class Model(object):
                 if entry[3] != '0':
                     datapath = Path(entry[3])
                 else:
-                    datapath = self.library.parent
+                    datapath = self.xsdir.parent
 
             # Get the full path to the ace library
             path = datapath / entry[2]
@@ -336,14 +336,20 @@ class Model(object):
             mat.add_s_alpha_beta(thermal_name)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
-        if self.library is not None:
+        if self.xsdir is not None:
             xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
         materials.export_to_xml(Path('openmc') / 'materials.xml')
 
         # Set up geometry
-        sphere = openmc.Sphere(boundary_type='vacuum', r=1.e9)
-        cell = openmc.Cell(fill=materials, region=-sphere)
+        min_x = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
+        max_x = openmc.XPlane(x0=+1.e9, boundary_type='reflective')
+        min_y = openmc.YPlane(y0=-1.e9, boundary_type='reflective')
+        max_y = openmc.YPlane(y0=+1.e9, boundary_type='reflective')
+        min_z = openmc.ZPlane(z0=-1.e9, boundary_type='reflective')
+        max_z = openmc.ZPlane(z0=+1.e9, boundary_type='reflective')
+        cell = openmc.Cell(fill=materials)
+        cell.region = +min_x & -max_x & +min_y & -max_y & +min_z & -max_z
         geometry = openmc.Geometry([cell])
         geometry.export_to_xml(Path('openmc') / 'geometry.xml')
 
@@ -393,16 +399,16 @@ class Model(object):
             lines.append(f'1 1 -{self.density} -1 imp:n=1')
         lines.append('2 0 1 imp:n=0')
         lines.append('')
- 
-        # Create the surface cards: sphere centered on origin with 1e9 cm
-        # radius and vacuum boundary conditions
+
+        # Create the surface cards: box centered on origin with 2e9 cm sides`
+        # and reflective boundary conditions
         lines.append('c --- Surface cards ---')
-        lines.append('+1 so 1.e9')
+        lines.append('*1 rpp -1.e9 1e9 -1.e9 1.e9 -1.e9 1.e9')
         lines.append('')
- 
+
         # Create the data cards
         lines.append('c --- Data cards ---')
- 
+
         # Materials
         if re.match('(71[0-6]nc)', self.suffix):
             name = self.szax
@@ -415,19 +421,19 @@ class Model(object):
 
         # Physics: neutron transport
         lines.append('mode n')
- 
+
         # Source definition: isotropic point source at center of sphere
         energy = self.energy * 1e-6
         lines.append(f'sdef cel=1 erg={energy}')
- 
+
         # Tallies: neutron flux over cell
         lines.append('f4:n 1')
         min_energy = self._min_energy * 1e-6
         lines.append(f'e4 {min_energy} {self._bins-1}ilog {1.0001*energy}')
- 
+
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
- 
+
         # Write the problem
         with open(Path('mcnp') / 'inp', 'w') as f:
             f.write('\n'.join(lines))
@@ -444,7 +450,7 @@ class Model(object):
         lines.append('')
 
         # Set the cross section library directory
-        if self.library is not None:
+        if self.xsdir is not None:
             xsdata = (Path('serpent') / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
             lines.append('')
@@ -455,10 +461,13 @@ class Model(object):
         lines.append('cell 2 0 outside 1')
         lines.append('')
 
-        # Create the surface cards: sphere centered on origin with 1e9 cm
-        # radius and vacuum boundary conditions
+        # Create the surface cards: box centered on origin with 2e9 cm sides`
+        # and reflective boundary conditions
         lines.append('% --- Surface cards ---')
-        lines.append('surf 1 sph 0.0 0.0 0.0 1.e9')
+        lines.append('surf 1 cube 0.0 0.0 0.0 1.e9')
+
+        # Reflective boundary conditions
+        lines.append('set bc 2')
         lines.append('')
 
         # Create the material cards
@@ -631,7 +640,7 @@ class Model(object):
         """Generate inputs, run problem, and plot results.
  
         """
-        if self.library is not None:
+        if self.xsdir is not None:
             self._create_library()
 
         # Generate input files
@@ -641,8 +650,8 @@ class Model(object):
         else:
             self._make_mcnp_input()
             args = ['mcnp6']
-            if self.library is not None:
-                args.append(f'XSDIR={self.library}')
+            if self.xsdir is not None:
+                args.append(f'XSDIR={self.xsdir}')
 
             # Remove old MCNP output files
             for f in ('outp', 'runtpe'):
