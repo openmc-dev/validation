@@ -10,11 +10,13 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-from openmc.data import ATOMIC_NUMBER, NEUTRON_MASS, K_BOLTZMANN
+from openmc.data import K_BOLTZMANN, NEUTRON_MASS
+from .utils import zaid, szax, XSDIR
 
 
-class Model(object):
-    """Monoenergetic, isotropic point source in an infinite geometry.
+class PhotonProductionModel(object):
+    """Monoenergetic, monodirectional neutron source directed down a thin,
+    infinitely long cylinder ('Broomstick' problem).
 
     Parameters
     ----------
@@ -22,8 +24,8 @@ class Model(object):
         Name of the material.
     density : float
         Density of the material in g/cm^3.
-    elements : list of tuple
-        List in which each item is a 2-tuple consisting of an element string and
+    nuclides : list of tuple
+        List in which each item is a 2-tuple consisting of a nuclide string and
         the atom fraction.
     energy : float
         Energy of the source (eV)
@@ -35,10 +37,12 @@ class Model(object):
     code : {'mcnp', 'serpent'}
         Code to validate against
     suffix : str
+        Neutron cross section suffix
+    photon_suffix : str
         Photon cross section suffix
     xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
-        table corresponding to the given element and suffix, and an HDF5
+        table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
     serpent_pdata : str
         Directory containing the additional data files needed for photon
@@ -52,8 +56,8 @@ class Model(object):
         Name of the material.
     density : float
         Density of the material in g/cm^3.
-    elements : list of tuple
-        List in which each item is a 2-tuple consisting of an element string and
+    nuclides : list of tuple
+        List in which each item is a 2-tuple consisting of a nuclide string and
         the atom fraction.
     energy : float
         Energy of the source (eV)
@@ -65,47 +69,57 @@ class Model(object):
     code : {'mcnp', 'serpent'}
         Code to validate against
     suffix : str
+        Neutron cross section suffix
+    photon_suffix : str
         Photon cross section suffix
     xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
-        table corresponding to the given element and suffix, and an HDF5
+        table corresponding to the given nuclide and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
     serpent_pdata : str
         Directory containing the additional data files needed for photon
         physics in Serpent.
     name : str
         Name used for output.
+    temperature : float
+        Temperature (Kelvin) of the cross section data
     bins : int
         Number of bins in the energy grid
     batches : int
         Number of batches to simulate
+    max_energy : float
+        Upper limit of energy grid (eV)
     cutoff_energy: float
         Photon cutoff energy (eV)
+    directory_openmc : pathlib.Path
+        Working directory for OpenMC
+    directory_other : pathlib.Path
+        Working directory for MCNP or Serpent
 
     """
 
-    def __init__(self, material, density, elements, energy, particles,
-                 electron_treatment, code, suffix, xsdir=None,
+    def __init__(self, material, density, nuclides, energy, particles,
+                 electron_treatment, code, suffix, photon_suffix, xsdir=None,
                  serpent_pdata=None, name=None):
+        self._temperature = None
         self._bins = 500
         self._batches = 100
         self._cutoff_energy = 1.e3
+        self._directory_openmc = None
+        self._directory_other = None
 
         self.material = material
         self.density = density
-        self.elements = elements
+        self.nuclides = nuclides
         self.energy = energy
         self.particles = particles
         self.electron_treatment = electron_treatment
         self.code = code
         self.suffix = suffix
+        self.photon_suffix = photon_suffix
         self.xsdir = xsdir
         self.serpent_pdata = serpent_pdata
         self.name = name
-
-    @property
-    def energy(self):
-        return self._energy
 
     @property
     def particles(self):
@@ -120,6 +134,10 @@ class Model(object):
         return self._suffix
 
     @property
+    def photon_suffix(self):
+        return self._photon_suffix
+
+    @property
     def xsdir(self):
         return self._xsdir
 
@@ -127,13 +145,26 @@ class Model(object):
     def serpent_pdata(self):
         return self._serpent_pdata
 
-    @energy.setter
-    def energy(self, energy):
-        if energy <= self._cutoff_energy:
-            msg = (f'Energy {energy} eV must be above the cutoff energy '
-                   f'{self._cutoff_energy} eV.')
-            raise ValueError(msg)
-        self._energy = energy
+    @property
+    def max_energy(self):
+        if self.energy < 1.e6:
+            return 1.e7
+        else:
+            return self.energy * 10
+
+    @property
+    def directory_openmc(self):
+        if self._directory_openmc is None:
+            self._directory_openmc = Path('openmc')
+            os.makedirs(self._directory_openmc, exist_ok=True)
+        return self._directory_openmc
+
+    @property
+    def directory_other(self):
+        if self._directory_other is None:
+            self._directory_other = Path(self.code)
+            os.makedirs(self._directory_other, exist_ok=True)
+        return self._directory_other
 
     @particles.setter
     def particles(self, particles):
@@ -157,10 +188,18 @@ class Model(object):
 
     @suffix.setter
     def suffix(self, suffix):
-        if not re.match('0[1-4]p|63p|84p|12p', suffix):
+        match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)|[0][3,6,9]c|[1][2,5,8]c'
+        if not re.match(match, suffix):
             msg = f'Unsupported cross section suffix {suffix}.'
             raise ValueError(msg)
         self._suffix = suffix
+
+    @photon_suffix.setter
+    def photon_suffix(self, photon_suffix):
+        if not re.match('0[1-4]p|63p|84p|12p', photon_suffix):
+            msg = f'Unsupported photon cross section suffix {photon_suffix}.'
+            raise ValueError(msg)
+        self._photon_suffix = photon_suffix
 
     @xsdir.setter
     def xsdir(self, xsdir):
@@ -190,144 +229,95 @@ class Model(object):
         HDF5 library that can be used by OpenMC.
 
         """
-        # Create data library and directory for HDF5 files
+        # Create data library
         data_lib = openmc.data.DataLibrary()
-        os.makedirs('openmc', exist_ok=True)
 
         # Get names of the ACE tables for all nuclides in model
-        datapath = None
-        entries = {}
-        for element, fraction in self.elements:
+        table_names = set()
+        for nuclide, _ in self.nuclides:
+            # Name of neutron cross section table
+            table_names.add(zaid(nuclide, self.suffix))
+
             # Name of photon cross section table
-            Z = ATOMIC_NUMBER[element]
-            name = f'{1000*Z}.{self.suffix}'
-            entries[name] = None
+            Z, A, m = openmc.data.zam(nuclide)
+            table_names.add(f'{1000*Z}.{self.photon_suffix}')
 
-            # TODO: Currently the neutron libraries are still read in to
-            # OpenMC even when doing pure photon transport, so we need to
-            # locate them and register them with the library.
-            path = os.getenv('OPENMC_CROSS_SECTIONS')
-            lib = openmc.data.DataLibrary.from_xml(path)
-            element = openmc.Element(element)
-            for nuclide, _, _ in element.expand(fraction, 'ao'):
-                h5_file = lib.get_by_material(nuclide)['path']
-                data_lib.register_file(h5_file)
+        # Load the XSDIR directory file
+        xsdir = XSDIR(self.xsdir)
 
-        # Get the location of the tables from the XSDIR directory file
-        with open(self.xsdir) as f:
-            # Read the datapath if it is specified
-            line = f.readline()
-            tokens = re.split('\s|=', line)
-            if tokens[0].lower() == 'datapath':
-                datapath = Path(tokens[1])
+        # Get the ACE cross section tables
+        tables = xsdir.get_tables(table_names)
 
-            line = f.readline()
-            while line:
-                # Handle continuation lines
-                while line[-2] == '+':
-                    line += f.readline()
-                    line = line.replace('+\n', '')
-
-                tokens = line.split()
-
-                # Store the entry if we need this table
-                if tokens[0] in entries.keys():
-                    entries[tokens[0]] = tokens
-
-                # Check if we found all the entries
-                if None not in entries.values():
-                    break
-
-                line = f.readline()
-
-        lines = []
-        for name, entry in entries.items():
-            if entry is None:
-                msg = f'Could not locate table {name} in XSDIR {self.xsdir}.'
-                raise ValueError(msg)
-
-            # Get the access route if it is specified; otherwise, set the parent
-            # directory of XSDIR as the datapath
-            if datapath is None:
-                if entry[3] != '0':
-                    datapath = Path(entry[3])
-                else:
-                    datapath = self.xsdir.parent
-
-            # Get the full path to the ace library
-            path = datapath / entry[2]
-            if not path.is_file():
-                msg = f'ACE file {path} does not exist.'
-                raise ValueError(msg)
-
-            # Get the data needed for the Serpent XSDATA directory file.
-            if self.code == 'serpent':
-                atomic_weight = float(entry[1]) * NEUTRON_MASS
-                temperature = float(entry[9]) / K_BOLTZMANN * 1e6
-                ZA, _ = name.split('.')
-                lines.append(f'{name} {name} 5 {ZA} 0 {atomic_weight} '
-                             f'{temperature} 0 {path}')
-
-            # Get the ACE table
-            print(f'Converting table {name} from library {path}...')
-            table = openmc.data.ace.get_table(path, name)
-
+        for table in tables:
             # Convert cross section data
-            data = openmc.data.IncidentPhoton.from_ace(table)
+            if table.name[-1] == 'c':
+                match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)'
+                scheme = 'mcnp' if re.match(match, self.suffix) else 'nndc'
+                data = openmc.data.IncidentNeutron.from_ace(table, scheme)
+                if self._temperature is None:
+                    self._temperature = data.kTs[0] / K_BOLTZMANN
+            else:
+                data = openmc.data.IncidentPhoton.from_ace(table)
 
             # Export HDF5 files and register with library
-            h5_file = Path('openmc') / f'{data.name}.h5'
+            h5_file = self.directory_openmc / f'{data.name}.h5'
             data.export_to_hdf5(h5_file, 'w')
             data_lib.register_file(h5_file)
 
         # Write cross_sections.xml
-        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
+        data_lib.export_to_xml(self.directory_openmc / 'cross_sections.xml')
 
         # Write the Serpent XSDATA file
         if self.code == 'serpent':
-            os.makedirs('serpent', exist_ok=True)
-            with open(Path('serpent') / 'xsdata', 'w') as f:
-                f.write('\n'.join(lines))
+            xsdir.export_to_xsdata(self.directory_other / 'xsdata', table_names)
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
 
         """
-        # Directory from which openmc is run
-        os.makedirs('openmc', exist_ok=True)
-        
         # Define material
         mat = openmc.Material()
-        for element, fraction in self.elements:
-            mat.add_element(element, fraction)
+        for nuclide, fraction in self.nuclides:
+            mat.add_nuclide(nuclide, fraction)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.xsdir is not None:
-            xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
+            xs_path = (self.directory_openmc / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(Path('openmc') / 'materials.xml')
-
-        # Set up geometry
-        min_x = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
-        max_x = openmc.XPlane(x0=+1.e9, boundary_type='reflective')
-        min_y = openmc.YPlane(y0=-1.e9, boundary_type='reflective')
-        max_y = openmc.YPlane(y0=+1.e9, boundary_type='reflective')
-        min_z = openmc.ZPlane(z0=-1.e9, boundary_type='reflective')
-        max_z = openmc.ZPlane(z0=+1.e9, boundary_type='reflective')
-        cell = openmc.Cell(fill=materials)
-        cell.region = +min_x & -max_x & +min_y & -max_y & +min_z & -max_z
-        geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(Path('openmc') / 'geometry.xml')
-
+        materials.export_to_xml(self.directory_openmc / 'materials.xml')
+ 
+        # Instantiate surfaces
+        cyl = openmc.XCylinder(boundary_type='vacuum', r=1.e-6)
+        px1 = openmc.XPlane(boundary_type='vacuum', x0=-1.)
+        px2 = openmc.XPlane(boundary_type='transmission', x0=1.)
+        px3 = openmc.XPlane(boundary_type='vacuum', x0=1.e9)
+ 
+        # Instantiate cells
+        inner_cyl_left = openmc.Cell()
+        inner_cyl_right = openmc.Cell()
+        outer_cyl = openmc.Cell()
+ 
+        # Set cells regions and materials
+        inner_cyl_left.region = -cyl & +px1 & -px2
+        inner_cyl_right.region = -cyl & +px2 & -px3
+        outer_cyl.region = ~(-cyl & +px1 & -px3)
+        inner_cyl_right.fill = mat
+ 
+        # Create root universe and export to XML
+        geometry = openmc.Geometry([inner_cyl_left, inner_cyl_right, outer_cyl])
+        geometry.export_to_xml(self.directory_openmc / 'geometry.xml')
+ 
         # Define source
         source = openmc.Source()
         source.space = openmc.stats.Point((0,0,0))
-        source.angle = openmc.stats.Isotropic()
+        source.angle = openmc.stats.Monodirectional()
         source.energy = openmc.stats.Discrete([self.energy], [1.])
-        source.particle = 'photon'
-
+        source.particle = 'neutron'
+ 
         # Settings
         settings = openmc.Settings()
+        if self._temperature is not None:
+            settings.temperature = {'default': self._temperature}
         settings.source = source
         settings.particles = self.particles // self._batches
         settings.run_mode = 'fixed source'
@@ -335,39 +325,46 @@ class Model(object):
         settings.photon_transport = True
         settings.electron_treatment = self.electron_treatment
         settings.cutoff = {'energy_photon' : self._cutoff_energy}
-        settings.export_to_xml(Path('openmc') / 'settings.xml')
+        settings.export_to_xml(self.directory_openmc / 'settings.xml')
  
-        # Define tallies
-        energy_bins = np.logspace(np.log10(self._cutoff_energy),
-                                  np.log10(1.0001*self.energy), self._bins+1)
-        energy_filter = openmc.EnergyFilter(energy_bins)
+        # Define filters
+        surface_filter = openmc.SurfaceFilter(cyl)
         particle_filter = openmc.ParticleFilter('photon')
-        tally = openmc.Tally(name='photon flux')
-        tally.filters = [energy_filter, particle_filter]
-        tally.scores = ['flux']
+        energy_bins = np.logspace(np.log10(self._cutoff_energy),
+                                  np.log10(self.max_energy), self._bins+1)
+        energy_filter = openmc.EnergyFilter(energy_bins)
+ 
+        # Create tallies and export to XML
+        tally = openmc.Tally(name='photon current')
+        tally.filters = [surface_filter, energy_filter, particle_filter]
+        tally.scores = ['current']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(Path('openmc') / 'tallies.xml')
+        tallies.export_to_xml(self.directory_openmc / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
 
         """
-        # Directory from which MCNP will be run
-        os.makedirs('mcnp', exist_ok=True)
-
         # Create the problem description
-        lines = ['Point source in infinite geometry']
+        lines = ['Broomstick problem']
 
-        # Create the cell cards: material 1 inside sphere, void outside
+        # Create the cell cards: material 1 inside cylinder, void outside
         lines.append('c --- Cell cards ---')
-        lines.append(f'1 1 -{self.density} -1 imp:p=1')
-        lines.append('2 0 1 imp:p=0')
+        if self._temperature is not None:
+            kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
+            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1 tmp={kT}')
+        else:
+            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1')
+        lines.append('2 0 -4 5 -6 imp:n,p=1')
+        lines.append('3 0 #(-4 5 -7) imp:n,p=0')
         lines.append('')
 
-        # Create the surface cards: box centered on origin with 2e9 cm sides`
-        # and reflective boundary conditions
+        # Create the surface cards: cylinder with radius 1e-6 cm along x-axis
         lines.append('c --- Surface cards ---')
-        lines.append('*1 rpp -1.e9 1e9 -1.e9 1.e9 -1.e9 1.e9')
+        lines.append('4 cx 1.0e-6')
+        lines.append('5 px -1.0')
+        lines.append('6 px 1.0')
+        lines.append('7 px 1.0e9')
         lines.append('')
 
         # Create the data cards
@@ -375,82 +372,98 @@ class Model(object):
 
         # Materials
         material_card = 'm1'
-        for element, fraction in self.elements:
-            Z = openmc.data.ATOMIC_NUMBER[element]
-            material_card += f' {Z}000.{self.suffix} -{fraction}'
+        for nuclide, fraction in self.nuclides:
+            if re.match('(71[0-6]nc)', self.suffix):
+                name = szax(nuclide, self.suffix)
+            else:
+                name = zaid(nuclide, self.suffix)
+            material_card += f' {name} -{fraction} plib={self.photon_suffix}'
         lines.append(material_card)
 
         # Energy in MeV
         energy = self.energy * 1e-6
+        max_energy = self.max_energy * 1e-6
         cutoff_energy = self._cutoff_energy * 1e-6
 
-        # Physics: photon transport, 1 keV photon cutoff energy
+        # Physics: neutron and neutron-induced photon, 1 keV photon cutoff energy
         if self.electron_treatment == 'led':
             flag = 1
         else:
             flag = 'j'
-        lines.append('mode p')
+        lines.append('mode n p')
         lines.append(f'phys:p j {flag} j j j')
         lines.append(f'cut:p j {cutoff_energy}')
 
-        # Source definition: isotropic point source at center of sphere
-        lines.append(f'sdef cel=1 erg={energy}')
+        # Source definition: point source at origin monodirectional along
+        # positive x-axis
+        lines.append(f'sdef cel=2 erg={energy} vec=1 0 0 dir=1 par=1')
 
-        # Tallies: photon flux over cell
-        lines.append('f4:p 1')
-        lines.append(f'e4 {cutoff_energy} {self._bins-1}ilog {1.0001*energy}')
+        # Tallies: Photon current over surface
+        lines.append('f1:p 4')
+        lines.append(f'e1 {cutoff_energy} {self._bins-1}ilog {max_energy}')
 
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
 
         # Write the problem
-        with open(Path('mcnp') / 'inp', 'w') as f:
+        with open(self.directory_other / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _make_serpent_input(self):
         """Generate the Serpent input file
 
         """
-        # Directory from which Serpent will be run
-        os.makedirs('serpent', exist_ok=True)
-
         # Create the problem description
-        lines = ['% Point source in infinite geometry']
+        lines = ['% Broomstick problem']
         lines.append('')
-
+ 
         # Set the cross section library directory
         if self.xsdir is not None:
-            xsdata = (Path('serpent') / 'xsdata').resolve()
+            xsdata = (self.directory_other / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
 
         # Set the photon data directory
         lines.append(f'set pdatadir "{self.serpent_pdata}"')
         lines.append('')
 
-        # Create the cell cards: material 1 inside sphere, void outside
+        # Create the cell cards: material 1 inside cylinder, void outside
         lines.append('% --- Cell cards ---')
-        lines.append('cell 1 0 m1 -1')
-        lines.append('cell 2 0 outside 1')
+        lines.append('cell 1 0 m1 -1 3 -4')
+        lines.append('cell 2 0 void -1 2 -3')
+        lines.append('cell 3 0 outside 1')
+        lines.append('cell 4 0 outside -2')
+        lines.append('cell 5 0 outside 4')
         lines.append('')
 
-        # Create the surface cards: box centered on origin with 2e9 cm sides`
-        # and reflective boundary conditions
+        # Create the surface cards: cylinder with radius 1e-6 cm along x-axis
         lines.append('% --- Surface cards ---')
-        lines.append('surf 1 cube 0.0 0.0 0.0 1.e9')
-
-        # Reflective boundary conditions
-        lines.append('set bc 2')
+        lines.append('surf 1 cylx 0.0 0.0 1.0e-6')
+        lines.append('surf 2 px -1.0')
+        lines.append('surf 3 px 1.0')
+        lines.append('surf 4 px 1.0e9')
         lines.append('')
 
         # Create the material cards
         lines.append('% --- Material cards ---')
         lines.append(f'mat m1 -{self.density}')
+        elements = {}
+        for nuclide, fraction in self.nuclides:
+            # Add nuclide data
+            name = zaid(nuclide, self.suffix)
+            lines.append(f'{name} {fraction}')
+
+            # Sum element fractions
+            Z, A, m = openmc.data.zam(nuclide)
+            name = f'{1000*Z}.{self.photon_suffix}'
+            if name not in elements:
+                elements[name] = fraction
+            else:
+                elements[name] += fraction
 
         # Add element data
-        for element, fraction in self.elements:
-            Z = ATOMIC_NUMBER[element]
-            name = f'{1000*Z}.{self.suffix}'
-            lines.append(f'{name} {fraction}')
+        for name, fraction in elements.items():
+                lines.append(f'{name} {fraction}')
+        lines.append('')
 
         # Turn on unresolved resonance probability treatment
         lines.append('set ures 1')
@@ -461,8 +474,17 @@ class Model(object):
         else:
             lines.append('set ttb 1')
 
+        # Turn on Doppler broadening of Compton scattered photons (on by
+        # default)
+        lines.append('set cdop 1')
+
+        # Coupled neutron-gamma calculations (0 is off, 1 is analog, 2 is
+        # implicit)
+        lines.append('set ngamma 1')
+
         # Energy in MeV
         energy = self.energy * 1e-6
+        max_energy = self.max_energy * 1e-6
         cutoff_energy = self._cutoff_energy * 1e-6
 
         # Set cutoff energy
@@ -472,19 +494,19 @@ class Model(object):
         # External source mode with isotropic point source at center of sphere
         lines.append('% --- Set external source mode ---')
         lines.append(f'set nps {self.particles} {self._batches}')
-        lines.append(f'src 1 g se {energy} sp 0.0 0.0 0.0')
+        lines.append(f'src 1 n se {energy} sp 0.0 0.0 0.0 sd 1.0 0.0 0.0')
         lines.append('')
 
-        # Detector definition: flux energy spectrum
+        # Detector definition: photon current over surface
         lines.append('% --- Detector definition ---')
-        lines.append('det 1 de 1 dc 1')
+        lines.append('det 1 p de 1 ds 1 1')
 
         # Energy grid definition: equal lethargy spacing
-        lines.append(f'ene 1 3 {self._bins} {cutoff_energy} {1.0001*energy}')
+        lines.append(f'ene 1 3 {self._bins} {cutoff_energy} {max_energy}')
         lines.append('')
 
         # Write the problem
-        with open(Path('serpent') / 'input', 'w') as f:
+        with open(self.directory_other / 'input', 'w') as f:
             f.write('\n'.join(lines))
 
     def _read_openmc_results(self):
@@ -492,9 +514,10 @@ class Model(object):
 
         """
         # Read the results from the OpenMC statepoint
-        path = Path('openmc') / f'statepoint.{self._batches}.h5'
+        path = self.directory_openmc / f'statepoint.{self._batches}.h5'
+
         with openmc.StatePoint(path) as sp:
-            t = sp.get_tally(name='photon flux')
+            t = sp.get_tally(name='photon current')
             x = t.find_filter(openmc.EnergyFilter).bins[:,1] * 1e-6
             y = t.mean[:,0,0]
             sd = t.std_dev[:,0,0]
@@ -509,9 +532,9 @@ class Model(object):
         """Extract the results from the MCNP output file
 
         """
-        with open(Path('mcnp') / 'outp', 'r') as f:
+        with open(self.directory_other / 'outp', 'r') as f:
             text = f.read()
-            p = text.find('1tally')
+            p = text.find(f'1tally{1: >9}')
             p = text.find('energy', p) + 10
             q = text.find('total', p)
             t = np.fromiter(text[p:q].split(), float)
@@ -530,7 +553,7 @@ class Model(object):
         """Extract the results from the Serpent output file
 
         """
-        with open(Path('serpent') / 'input_det0.m', 'r') as f:
+        with open(self.directory_other / 'input_det0.m', 'r') as f:
             text = f.read().split()
             n = self._bins
             t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
@@ -586,15 +609,16 @@ class Model(object):
         ax1.grid(b=False, axis='both', which='both')
         ax2.tick_params(axis='y', which='both', right=False)
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
- 
+
         # Energy in MeV
         energy = self.energy * 1e-6
+        max_energy = self.max_energy * 1e-6
         cutoff_energy = self._cutoff_energy * 1e-6
 
         # Set axes labels and limits
-        ax1.set_xlim([cutoff_energy, energy])
+        ax1.set_xlim([cutoff_energy, max_energy])
         ax1.set_xlabel('Energy (MeV)', size=12)
-        ax1.set_ylabel('Spectrum', size=12)
+        ax1.set_ylabel('Particle Current', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
         title = f'{self.material}, {energy:.1e} MeV Source'
@@ -606,6 +630,8 @@ class Model(object):
             name = self.name
         else:
             name = f'{self.material}-{energy:.1e}MeV'
+            if self._temperature is not None:
+                name +=  f'-{self._temperature:.1f}K'
         plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
         plt.close()
 
@@ -626,13 +652,13 @@ class Model(object):
             if self.xsdir is not None:
                 args.append(f'XSDIR={self.xsdir}')
 
-        # Remove old MCNP output files
-        for f in ('outp', 'runtpe'):
-            try:
-                os.remove(Path('mcnp') / f)
-            except OSError:
-                pass
- 
+            # Remove old MCNP output files
+            for f in ('outp', 'runtpe'):
+                try:
+                    os.remove(self.directory_other / f)
+                except OSError:
+                    pass
+
         self._make_openmc_input()
 
         # Run code and capture and print output

@@ -2,7 +2,7 @@
 
 import argparse
 
-import model
+from validate_physics.photon_physics import PhotonPhysicsModel
 
 
 # Define command-line options
@@ -33,7 +33,10 @@ parser.add_argument('-g', '--serpent_pdata', type=str, help='Directory '
 parser.add_argument('-o', '--output-name', type=str, help='Name used for output.')
 args = parser.parse_args()
 
-m = model.Model(args.element, args.density, [(args.element, 1.)], args.energy,
-                args.particles, args.electron_treatment, args.code, args.suffix,
-                args.xsdir, args.serpent_pdata, args.output_name)
-m.run()
+model = PhotonPhysicsModel(
+    args.element, args.density, [(args.element, 1.)], args.energy,
+    args.particles, args.electron_treatment, args.code, args.suffix,
+    args.xsdir, args.serpent_pdata, args.output_name
+)
+
+model.run()

@@ -10,10 +10,11 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-from openmc.data import K_BOLTZMANN, NEUTRON_MASS
+from openmc.data import K_BOLTZMANN
+from .utils import zaid, szax, XSDIR
 
 
-class Model(object):
+class NeutronPhysicsModel(object):
     """Monoenergetic, isotropic point source in an infinite geometry.
 
     Parameters
@@ -71,6 +72,10 @@ class Model(object):
         Number of batches to simulate
     min_energy : float
         Lower limit of energy grid (eV)
+    directory_openmc : pathlib.Path
+        Working directory for OpenMC
+    directory_other : pathlib.Path
+        Working directory for MCNP or Serpent
 
     """
 
@@ -80,6 +85,8 @@ class Model(object):
         self._bins = 500
         self._batches = 100
         self._min_energy = 1.e-5
+        self._directory_openmc = None
+        self._directory_other = None
 
         self.nuclide = nuclide
         self.density = density
@@ -112,52 +119,18 @@ class Model(object):
         return self._xsdir
 
     @property
-    def zaid(self):
-        Z, A, m = openmc.data.zam(self.nuclide)
-
-        # Serpent metastable convention
-        if re.match('[0][3,6,9]c|[1][2,5,8]c', self.suffix):
-            # Increase mass number above 300
-            if m > 0:
-                while A < 300:
-                    A += 100
-
-        # MCNP metastable convention
-        else:
-            # Correct the ground state and first excited state of Am242, which
-            # are the reverse of the convention
-            if A == 242 and m == 0:
-                m = 1
-            elif A == 242 and m == 1:
-                m = 0
-
-            if m > 0:
-                A += 300 + 100*m
-
-        if re.match('(71[0-6]nc)', self.suffix):
-            suffix = f'8{self.suffix[2]}c'
-        else:
-            suffix = self.suffix
-
-        return f'{1000*Z + A}.{suffix}'
+    def directory_openmc(self):
+        if self._directory_openmc is None:
+            self._directory_openmc = Path('openmc')
+            os.makedirs(self._directory_openmc, exist_ok=True)
+        return self._directory_openmc
 
     @property
-    def szax(self):
-        Z, A, m = openmc.data.zam(self.nuclide)
-
-        # Correct the ground state and first excited state of Am242, which are
-        # the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if re.match('(7[0-4]c)|(8[0-6]c)', self.suffix):
-            suffix = f'71{self.suffix[1]}nc'
-        else:
-            suffix = self.suffix
-
-        return f'{1000000*m + 1000*Z + A}.{suffix}'
+    def directory_other(self):
+        if self._directory_other is None:
+            self._directory_other = Path(self.code)
+            os.makedirs(self._directory_other, exist_ok=True)
+        return self._directory_other
 
     @energy.setter
     def energy(self, energy):
@@ -209,97 +182,25 @@ class Model(object):
         HDF5 library that can be used by OpenMC.
 
         """
-        # Get the names of the ACE tables used in the model
-        datapath = None
-        entries = {self.zaid: None}
-        if self.thermal is not None:
-            entries[self.thermal] = None
-
-        # Get the location of the table from the XSDIR directory file
-        with open(self.xsdir) as f:
-            # Read the datapath if it is specified
-            line = f.readline()
-            tokens = re.split('\s|=', line)
-            if tokens[0].lower() == 'datapath':
-                datapath = Path(tokens[1])
-
-            line = f.readline()
-            while line:
-                # Handle continuation lines
-                while line[-2] == '+':
-                    line += f.readline()
-                    line = line.replace('+\n', '')
-
-                tokens = line.split()
-
-                # Store the entry if we need this table
-                if tokens[0] in entries.keys():
-                    entries[tokens[0]] = tokens
-
-                # Check if we have found all entries
-                if None not in entries.values():
-                    break
-
-                line = f.readline()
-
-        # Create data library and directory for HDF5 files
+        # Create data library
         data_lib = openmc.data.DataLibrary()
-        os.makedirs('openmc', exist_ok=True)
 
-        lines = []
-        for name, entry in entries.items():
-            if entry is None:
-                msg = f'Could not locate table {name} in XSDIR {self.xsdir}.'
-                raise ValueError(msg)
+        # Get the names of the ACE tables used in the model
+        table_names = [zaid(self.nuclide, self.suffix)]
+        if self.thermal is not None:
+            table_names.append(self.thermal)
 
-            # Get the access route if it is specified; otherwise, set the parent
-            # directory of XSDIR as the datapath
-            if datapath is None:
-                if entry[3] != '0':
-                    datapath = Path(entry[3])
-                else:
-                    datapath = self.xsdir.parent
+        # Load the XSDIR directory file
+        xsdir = XSDIR(self.xsdir)
 
-            # Get the full path to the ace library
-            path = datapath / entry[2]
-            if not path.is_file():
-                msg = f'ACE file {path} does not exist.'
-                raise ValueError(msg)
+        # Get the ACE cross section tables
+        tables = xsdir.get_tables(table_names)
 
-            # Determine if this is a neutron cross section table
-            neutron = name[-1] == 'c'
-
-            # Get the data needed for the Serpent XSDATA directory file
-            if self.code == 'serpent':
-                atomic_weight = float(entry[1]) * NEUTRON_MASS
-                temperature = float(entry[9]) / K_BOLTZMANN * 1e6
-
-                # Neutron table
-                if neutron:
-                    if entry[4] != '1':
-                        msg = f'File type {entry[4]} not supported for {name}.'
-                        raise ValueError(msg)
-                    Z, A, m = openmc.data.zam(self.nuclide)
-                    lines.append(f'{name} {name} 1 {1000*Z + A} {m} '
-                                 f'{atomic_weight} {temperature} 0 {path}')
-                # S(alpha, beta) table
-                else:
-                    lines.append(f'{name} {name} 3 0 0 {atomic_weight} '
-                                 f'{temperature} 0 {path}')
-
-            if neutron and re.match('(8[0-6]c)|(71[0-6]nc)', self.suffix):
-                name = self.szax
-
-            # Get the ACE table
-            print(f'Converting table {name} from library {path}...')
-            table = openmc.data.ace.get_table(path, name)
-
+        for table in tables:
             # Convert cross section data
-            if neutron:
-                if re.match('(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)', self.suffix):
-                    scheme = 'mcnp'
-                else:
-                    scheme = 'nndc'
+            if table.name[-1] == 'c':
+                match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)'
+                scheme = 'mcnp' if re.match(match, self.suffix) else 'nndc'
                 data = openmc.data.IncidentNeutron.from_ace(table, scheme)
                 if self._temperature is None:
                     self._temperature = data.kTs[0] / K_BOLTZMANN
@@ -307,26 +208,21 @@ class Model(object):
                 data = openmc.data.ThermalScattering.from_ace(table)
 
             # Export HDF5 files and register with library
-            h5_file = Path('openmc') / f'{data.name}.h5'
+            h5_file = self.directory_openmc / f'{data.name}.h5'
             data.export_to_hdf5(h5_file, 'w')
             data_lib.register_file(h5_file)
 
         # Write cross_sections.xml
-        data_lib.export_to_xml(Path('openmc') / 'cross_sections.xml')
+        data_lib.export_to_xml(self.directory_openmc / 'cross_sections.xml')
 
         # Write the Serpent XSDATA file
         if self.code == 'serpent':
-            os.makedirs('serpent', exist_ok=True)
-            with open(Path('serpent') / 'xsdata', 'w') as f:
-                f.write('\n'.join(lines))
+            xsdir.export_to_xsdata(self.directory_other / 'xsdata', table_names)
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
 
         """
-        # Directory from which openmc is run
-        os.makedirs('openmc', exist_ok=True)
-        
         # Define material
         mat = openmc.Material()
         mat.add_nuclide(self.nuclide, 1.0)
@@ -337,21 +233,21 @@ class Model(object):
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.xsdir is not None:
-            xs_path = (Path('openmc') / 'cross_sections.xml').resolve()
+            xs_path = (self.directory_openmc / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(Path('openmc') / 'materials.xml')
+        materials.export_to_xml(self.directory_openmc / 'materials.xml')
 
         # Set up geometry
-        min_x = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
-        max_x = openmc.XPlane(x0=+1.e9, boundary_type='reflective')
-        min_y = openmc.YPlane(y0=-1.e9, boundary_type='reflective')
-        max_y = openmc.YPlane(y0=+1.e9, boundary_type='reflective')
-        min_z = openmc.ZPlane(z0=-1.e9, boundary_type='reflective')
-        max_z = openmc.ZPlane(z0=+1.e9, boundary_type='reflective')
+        x1 = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
+        x2 = openmc.XPlane(x0=+1.e9, boundary_type='reflective')
+        y1 = openmc.YPlane(y0=-1.e9, boundary_type='reflective')
+        y2 = openmc.YPlane(y0=+1.e9, boundary_type='reflective')
+        z1 = openmc.ZPlane(z0=-1.e9, boundary_type='reflective')
+        z2 = openmc.ZPlane(z0=+1.e9, boundary_type='reflective')
         cell = openmc.Cell(fill=materials)
-        cell.region = +min_x & -max_x & +min_y & -max_y & +min_z & -max_z
+        cell.region = +x1 & -x2 & +y1 & -y2 & +z1 & -z2
         geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(Path('openmc') / 'geometry.xml')
+        geometry.export_to_xml(self.directory_openmc / 'geometry.xml')
 
         # Define source
         source = openmc.Source()
@@ -368,7 +264,7 @@ class Model(object):
         settings.run_mode = 'fixed source'
         settings.batches = self._batches
         settings.create_fission_neutrons = False
-        settings.export_to_xml(Path('openmc') / 'settings.xml')
+        settings.export_to_xml(self.directory_openmc / 'settings.xml')
  
         # Define tallies
         energy_bins = np.logspace(np.log10(self._min_energy),
@@ -378,15 +274,12 @@ class Model(object):
         tally.filters = [energy_filter]
         tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(Path('openmc') / 'tallies.xml')
+        tallies.export_to_xml(self.directory_openmc / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
 
         """
-        # Directory from which MCNP will be run
-        os.makedirs('mcnp', exist_ok=True)
-
         # Create the problem description
         lines = ['Point source in infinite geometry']
 
@@ -411,9 +304,9 @@ class Model(object):
 
         # Materials
         if re.match('(71[0-6]nc)', self.suffix):
-            name = self.szax
+            name = szax(self.nuclide, self.suffix)
         else:
-            name = self.zaid
+            name = zaid(self.nuclide, self.suffix)
         lines.append(f'm1 {name} 1.0')
         if self.thermal is not None:
             lines.append(f'mt1 {self.thermal}')
@@ -435,23 +328,20 @@ class Model(object):
         lines.append(f'nps {self.particles}')
 
         # Write the problem
-        with open(Path('mcnp') / 'inp', 'w') as f:
+        with open(self.directory_other / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _make_serpent_input(self):
         """Generate the Serpent input file
 
         """
-        # Directory from which Serpent will be run
-        os.makedirs('serpent', exist_ok=True)
-
         # Create the problem description
         lines = ['% Point source in infinite geometry']
         lines.append('')
 
         # Set the cross section library directory
         if self.xsdir is not None:
-            xsdata = (Path('serpent') / 'xsdata').resolve()
+            xsdata = (self.directory_other / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
             lines.append('')
  
@@ -472,7 +362,7 @@ class Model(object):
 
         # Create the material cards
         lines.append('% --- Material cards ---')
-        name = self.zaid
+        name = zaid(self.nuclide, self.suffix)
         if self.thermal is not None:
             Z, A, m = openmc.data.zam(self.nuclide)
             lines.append(f'mat m1 -{self.density} moder t1 {1000*Z + A}')
@@ -508,7 +398,7 @@ class Model(object):
         lines.append('set ures 1')
 
         # Write the problem
-        with open(Path('serpent') / 'input', 'w') as f:
+        with open(self.directory_other / 'input', 'w') as f:
             f.write('\n'.join(lines))
 
     def _read_openmc_results(self):
@@ -516,7 +406,7 @@ class Model(object):
 
         """
         # Read the results from the OpenMC statepoint
-        path = Path('openmc') / f'statepoint.{self._batches}.h5'
+        path = self.directory_openmc / f'statepoint.{self._batches}.h5'
         with openmc.StatePoint(path) as sp:
             t = sp.get_tally(name='neutron flux')
             x = t.find_filter(openmc.EnergyFilter).bins[:,1]
@@ -532,7 +422,7 @@ class Model(object):
         """Extract the results from the MCNP output file
 
         """
-        with open(Path('mcnp') / 'outp', 'r') as f:
+        with open(self.directory_other / 'outp', 'r') as f:
             text = f.read()
             p = text.find('1tally')
             p = text.find('energy', p) + 10
@@ -552,7 +442,7 @@ class Model(object):
         """Extract the results from the Serpent output file
 
         """
-        with open(Path('serpent') / 'input_det0.m', 'r') as f:
+        with open(self.directory_other / 'input_det0.m', 'r') as f:
             text = f.read().split()
             n = self._bins
             t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
@@ -656,7 +546,7 @@ class Model(object):
             # Remove old MCNP output files
             for f in ('outp', 'runtpe'):
                 try:
-                    os.remove(Path('mcnp') / f)
+                    os.remove(self.directory_other / f)
                 except OSError:
                     pass
 
