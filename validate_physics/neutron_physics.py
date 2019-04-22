@@ -6,12 +6,13 @@ import re
 import shutil
 import subprocess
 
+import h5py
 from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
 from openmc.data import K_BOLTZMANN
-from .utils import zaid, szax, XSDIR
+from .utils import zaid, szax, create_library
 
 
 class NeutronPhysicsModel(object):
@@ -76,6 +77,8 @@ class NeutronPhysicsModel(object):
         Working directory for OpenMC
     directory_other : pathlib.Path
         Working directory for MCNP or Serpent
+    table_names : list of str
+        Names of the ACE tables used in the model
 
     """
 
@@ -132,6 +135,13 @@ class NeutronPhysicsModel(object):
             os.makedirs(self._directory_other, exist_ok=True)
         return self._directory_other
 
+    @property
+    def table_names(self):
+        table_names = [zaid(self.nuclide, self.suffix)]
+        if self.thermal is not None:
+            table_names.append(self.thermal)
+        return table_names
+
     @energy.setter
     def energy(self, energy):
         if energy <= self._min_energy:
@@ -176,48 +186,6 @@ class NeutronPhysicsModel(object):
                 msg = f'Could not locate the XSDIR file {xsdir}.'
                 raise ValueError(msg)
         self._xsdir = xsdir
-
-    def _create_library(self):
-        """Convert the ACE data from the MCNP or Serpent distribution into an
-        HDF5 library that can be used by OpenMC.
-
-        """
-        # Create data library
-        data_lib = openmc.data.DataLibrary()
-
-        # Get the names of the ACE tables used in the model
-        table_names = [zaid(self.nuclide, self.suffix)]
-        if self.thermal is not None:
-            table_names.append(self.thermal)
-
-        # Load the XSDIR directory file
-        xsdir = XSDIR(self.xsdir)
-
-        # Get the ACE cross section tables
-        tables = xsdir.get_tables(table_names)
-
-        for table in tables:
-            # Convert cross section data
-            if table.name[-1] == 'c':
-                match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)'
-                scheme = 'mcnp' if re.match(match, self.suffix) else 'nndc'
-                data = openmc.data.IncidentNeutron.from_ace(table, scheme)
-                if self._temperature is None:
-                    self._temperature = data.kTs[0] / K_BOLTZMANN
-            else:
-                data = openmc.data.ThermalScattering.from_ace(table)
-
-            # Export HDF5 files and register with library
-            h5_file = self.directory_openmc / f'{data.name}.h5'
-            data.export_to_hdf5(h5_file, 'w')
-            data_lib.register_file(h5_file)
-
-        # Write cross_sections.xml
-        data_lib.export_to_xml(self.directory_openmc / 'cross_sections.xml')
-
-        # Write the Serpent XSDATA file
-        if self.code == 'serpent':
-            xsdir.export_to_xsdata(self.directory_other / 'xsdata', table_names)
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
@@ -531,7 +499,17 @@ class NeutronPhysicsModel(object):
  
         """
         if self.xsdir is not None:
-            self._create_library()
+            if self.code == 'serpent':
+                xsdata_path = self.directory_other / 'xsdata'
+            else:
+                xsdata_path = None
+            create_library(self.xsdir, self.table_names, self.directory_openmc,
+                           xsdata_path)
+
+            # Get the temperature of the cross section data
+            f = h5py.File(self.directory_openmc / (self.nuclide + '.h5'), 'r')
+            temperature = list(f[self.nuclide]['kTs'].values())[0][()]
+            self._temperature = temperature / K_BOLTZMANN
 
         # Generate input files
         if self.code == 'serpent':

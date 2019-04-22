@@ -5,80 +5,6 @@ import openmc.data
 from openmc.data import K_BOLTZMANN, NEUTRON_MASS
 
 
-def zaid(nuclide, suffix):
-    """Return ZAID for a given nuclide and cross section suffix.
-
-    Parameters
-    ----------
-    nuclide : str
-        Name of the nuclide
-    suffix : str
-        Cross section suffix for MCNP
-
-    Returns
-    -------
-    str
-        ZA identifier
-
-    """
-    Z, A, m = openmc.data.zam(nuclide)
-
-    # Serpent metastable convention
-    if re.match('[0][3,6,9]c|[1][2,5,8]c', suffix):
-        # Increase mass number above 300
-        if m > 0:
-            while A < 300:
-                A += 100
-
-    # MCNP metastable convention
-    else:
-        # Correct the ground state and first excited state of Am242, which
-        # are the reverse of the convention
-        if A == 242 and m == 0:
-            m = 1
-        elif A == 242 and m == 1:
-            m = 0
-
-        if m > 0:
-            A += 300 + 100*m
-
-    if re.match('(71[0-6]nc)', suffix):
-        suffix = f'8{suffix[2]}c'
-
-    return f'{1000*Z + A}.{suffix}'
-
-
-def szax(nuclide, suffix):
-    """Return SZAX for a given nuclide and cross section suffix.
-
-    Parameters
-    ----------
-    nuclide : str
-        Name of the nuclide
-    suffix : str
-        Cross section suffix for MCNP
-
-    Returns
-    -------
-    str
-        SZA identifier
-
-    """
-    Z, A, m = openmc.data.zam(nuclide)
-
-    # Correct the ground state and first excited state of Am242, which are
-    # the reverse of the convention
-    if A == 242 and m == 0:
-        m = 1
-    elif A == 242 and m == 1:
-        m = 0
-
-    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
-        suffix = f'71{suffix[1]}nc'
-
-    return f'{1000000*m + 1000*Z + A}.{suffix}'
-
-
 class XSDIR(object):
     """XSDIR directory file
 
@@ -151,7 +77,7 @@ class XSDIR(object):
 
     def export_to_xsdata(self, path='xsdata', table_names=None):
         """Create a Serpent XSDATA directory file.
- 
+
         Parameters
         ----------
         path : str
@@ -166,24 +92,24 @@ class XSDIR(object):
             table_names = self.directory.keys()
         else:
             table_names = set(table_names)
- 
+
         # Classes of data included in the XSDATA file (continuous-energy
         # neutron, neutron dosimetry, thermal scattering, and continuous-energy
         # photoatomic)
         data_classes = {'c': 1, 'y': 2, 't': 3, 'p': 5}
- 
+
         lines = []
         for name in table_names:
             table = self.directory.get(name)
             if table is None:
                 msg = f'Could not find table {name} in {self.filename}.'
                 raise ValueError(msg)
- 
+
             # Check file format
             if table.file_type != 'ascii':
                 msg = f'Unsupported file type {table.file_type} for {name}.'
                 raise ValueError(msg)
- 
+
             if self.datapath is None:
                 # Set the access route as the datapath if it is specified;
                 # otherwise, set the parent directory of XSDIR as the datapath
@@ -193,19 +119,19 @@ class XSDIR(object):
                     datapath = Path(self.filename).parent
             else:
                 datapath = Path(self.datapath)
- 
+
             # Get the full path to the ace library
             ace_path = datapath / table.file_name
             if not ace_path.is_file():
                 raise ValueError(f'Could not find ACE file {ace_path}.')
- 
+
             zaid, suffix = name.split('.')
- 
+
             # Skip this table if it is not one of the data classes included in
             # XSDATA
             if suffix[-1] not in data_classes:
                 continue
- 
+
             # Get information about material and type of cross section data
             data_class = data_classes[suffix[-1]]
             if data_class == 3:
@@ -223,26 +149,26 @@ class XSDIR(object):
                 else:
                     alias += f'{A}m.'
                 alias += suffix
- 
+
             # Calculate the atomic weight
             if zaid in self.atomic_weight_ratio:
                 atomic_weight = self.atomic_weight_ratio[zaid] * NEUTRON_MASS
             else:
                 atomic_weight = table.atomic_weight_ratio * NEUTRON_MASS
- 
+
             # Calculate the temperature in Kelvin
             temperature = table.temperature / K_BOLTZMANN * 1e6
- 
+
             # Entry in the XSDATA file
             lines.append(f'{name} {name} {data_class} {ZA} {m} '
                          f'{atomic_weight:.8f} {temperature:.1f} 0 {ace_path}')
- 
+
             # Also write an entry with the alias if this is not a thermal
             # scattering table
             if data_class != 3:
                 lines.append(f'{alias} {name} {data_class} {ZA} {m} '
                              f'{atomic_weight:.8f} {temperature:.1f} 0 {ace_path}')
- 
+
         # Write the XSDATA file
         with open(path, 'w') as f:
             f.write('\n'.join(lines))
@@ -371,3 +297,134 @@ class XSDIRTable(object):
             self.ptables = entries[10].lower() == 'ptable'
         else:
             self.ptables = False
+
+
+def zaid(nuclide, suffix):
+    """Return ZAID for a given nuclide and cross section suffix.
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        ZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Serpent metastable convention
+    if re.match('[0][3,6,9]c|[1][2,5,8]c', suffix):
+        # Increase mass number above 300
+        if m > 0:
+            while A < 300:
+                A += 100
+
+    # MCNP metastable convention
+    else:
+        # Correct the ground state and first excited state of Am242, which
+        # are the reverse of the convention
+        if A == 242 and m == 0:
+            m = 1
+        elif A == 242 and m == 1:
+            m = 0
+
+        if m > 0:
+            A += 300 + 100*m
+
+    if re.match('(71[0-6]nc)', suffix):
+        suffix = f'8{suffix[2]}c'
+
+    return f'{1000*Z + A}.{suffix}'
+
+
+def szax(nuclide, suffix):
+    """Return SZAX for a given nuclide and cross section suffix.
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide
+    suffix : str
+        Cross section suffix for MCNP
+
+    Returns
+    -------
+    str
+        SZA identifier
+
+    """
+    Z, A, m = openmc.data.zam(nuclide)
+
+    # Correct the ground state and first excited state of Am242, which are
+    # the reverse of the convention
+    if A == 242 and m == 0:
+        m = 1
+    elif A == 242 and m == 1:
+        m = 0
+
+    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
+        suffix = f'71{suffix[1]}nc'
+
+    return f'{1000000*m + 1000*Z + A}.{suffix}'
+
+
+def create_library(xsdir, table_names, hdf5_path, xsdata_path=None):
+    """Convert the ACE data from the MCNP or Serpent distribution into an
+    HDF5 library that can be used by OpenMC and create and XSDATA directory
+    file for use with Serpent.
+
+    Parameters
+    ----------
+    xsdir : str
+        Path of the XSDIR directory file
+    table_names : str or iterable
+        Names of the ACE tables to convert
+    hdf5_path : str
+        Directory to write the HDF5 library to
+    xsdata_path : str
+        If specified, an XSDATA directory file containing entries for each of
+        the table names provided will be written to this path.
+
+    """
+    # Create data library
+    data_lib = openmc.data.DataLibrary()
+
+    # Load the XSDIR directory file
+    xsdir = XSDIR(xsdir)
+
+    # Get the ACE cross section tables
+    tables = xsdir.get_tables(table_names)
+
+    for table in tables:
+        zaid, suffix = table.name.split('.')
+
+        # Convert cross section data
+        if suffix[-1] == 'c':
+            match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)'
+            scheme = 'mcnp' if re.match(match, suffix) else 'nndc'
+            data = openmc.data.IncidentNeutron.from_ace(table, scheme)
+        elif suffix[-1] == 'p':
+            data = openmc.data.IncidentPhoton.from_ace(table)
+        elif suffix[-1] == 't':
+            data = openmc.data.ThermalScattering.from_ace(table)
+        else:
+            msg = ('Unknown data class: cannot convert cross section data '
+                   f'from table {table.name}')
+            raise ValueError(msg)
+
+        # Export HDF5 files and register with library
+        h5_file = Path(hdf5_path) / f'{data.name}.h5'
+        data.export_to_hdf5(h5_file, 'w')
+        data_lib.register_file(h5_file)
+
+    # Write cross_sections.xml
+    data_lib.export_to_xml(Path(hdf5_path) / 'cross_sections.xml')
+
+    # Write the Serpent XSDATA file
+    if xsdata_path is not None:
+        xsdir.export_to_xsdata(xsdata_path, table_names)

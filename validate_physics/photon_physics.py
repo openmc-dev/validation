@@ -11,7 +11,7 @@ import numpy as np
 
 import openmc
 from openmc.data import ATOMIC_NUMBER, NEUTRON_MASS, K_BOLTZMANN
-from .utils import XSDIR
+from .utils import create_library
 
 
 class PhotonPhysicsModel(object):
@@ -86,6 +86,8 @@ class PhotonPhysicsModel(object):
         Working directory for OpenMC
     directory_other : pathlib.Path
         Working directory for MCNP or Serpent
+    table_names : list of str
+        Names of the ACE tables used in the model
 
     """
 
@@ -148,6 +150,14 @@ class PhotonPhysicsModel(object):
             os.makedirs(self._directory_other, exist_ok=True)
         return self._directory_other
 
+    @property
+    def table_names(self):
+        table_names = []
+        for element, _ in self.elements:
+            Z = ATOMIC_NUMBER[element]
+            table_names.append(f'{1000*Z}.{self.suffix}')
+        return table_names
+
     @energy.setter
     def energy(self, energy):
         if energy <= self._cutoff_energy:
@@ -205,53 +215,6 @@ class PhotonPhysicsModel(object):
                        f'{serpent_pdata}.')
                 raise ValueError(msg)
         self._serpent_pdata = serpent_pdata
-
-    def _create_library(self):
-        """Convert the ACE data from the MCNP or Serpent distribution into an
-        HDF5 library that can be used by OpenMC.
-
-        """
-        # Create data library
-        data_lib = openmc.data.DataLibrary()
-
-        # Get names of the ACE tables for all nuclides in model
-        table_names = []
-        for element, fraction in self.elements:
-            # Name of photon cross section table
-            Z = ATOMIC_NUMBER[element]
-            table_names.append(f'{1000*Z}.{self.suffix}')
-
-            # TODO: Currently the neutron libraries are still read in to
-            # OpenMC even when doing pure photon transport, so we need to
-            # locate them and register them with the library.
-            path = os.getenv('OPENMC_CROSS_SECTIONS')
-            lib = openmc.data.DataLibrary.from_xml(path)
-            element = openmc.Element(element)
-            for nuclide, _, _ in element.expand(fraction, 'ao'):
-                h5_file = lib.get_by_material(nuclide)['path']
-                data_lib.register_file(h5_file)
-
-        # Load the XSDIR directory file
-        xsdir = XSDIR(self.xsdir)
-
-        # Get the ACE cross section tables
-        tables = xsdir.get_tables(table_names)
-
-        for table in tables:
-            # Convert cross section data
-            data = openmc.data.IncidentPhoton.from_ace(table)
-
-            # Export HDF5 files and register with library
-            h5_file = self.directory_openmc / f'{data.name}.h5'
-            data.export_to_hdf5(h5_file, 'w')
-            data_lib.register_file(h5_file)
-
-        # Write cross_sections.xml
-        data_lib.export_to_xml(self.directory_openmc / 'cross_sections.xml')
-
-        # Write the Serpent XSDATA file
-        if self.code == 'serpent':
-            xsdir.export_to_xsdata(self.directory_other / 'xsdata', table_names)
 
     def _make_openmc_input(self):
         """Generate the OpenMC input XML
@@ -568,8 +531,31 @@ class PhotonPhysicsModel(object):
         """Generate inputs, run problem, and plot results.
  
         """
+        # Create the HDF5 library
         if self.xsdir is not None:
-            self._create_library()
+            if self.code == 'serpent':
+                xsdata_path = self.directory_other / 'xsdata'
+            else:
+                xsdata_path = None
+            create_library(self.xsdir, self.table_names, self.directory_openmc,
+                           xsdata_path)
+
+            # TODO: Currently the neutron libraries are still read in to OpenMC
+            # even when doing pure photon transport, so we need to locate them and
+            # register them with the library.
+            path = os.getenv('OPENMC_CROSS_SECTIONS')
+            lib = openmc.data.DataLibrary.from_xml(path)
+
+            path = self.directory_openmc / 'cross_sections.xml'
+            data_lib = openmc.data.DataLibrary.from_xml(path)
+
+            for element, fraction in self.elements:
+                element = openmc.Element(element)
+                for nuclide, _, _ in element.expand(fraction, 'ao'):
+                    h5_file = lib.get_by_material(nuclide)['path']
+                    data_lib.register_file(h5_file)
+
+            data_lib.export_to_xml(path)
 
         # Generate input files
         if self.code == 'serpent':
