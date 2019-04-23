@@ -1,23 +1,61 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 
-import h5py
 from matplotlib import pyplot as plt
 import numpy as np
 
 import openmc
-from openmc.data import K_BOLTZMANN, NEUTRON_MASS
-from .utils import zaid, szax, create_library, read_results
+from openmc.data import ATOMIC_NUMBER, NEUTRON_MASS, K_BOLTZMANN
+from .utils import create_library, read_results
 
 
-class PhotonProductionModel(object):
-    """Monoenergetic, monodirectional neutron source directed down a thin,
-    infinitely long cylinder ('Broomstick' problem).
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('element', type=str,
+                        help='Name of the element, e.g. "U"')
+    parser.add_argument('-d', '--density', type=float, default=1.,
+                        help='Density of the material in g/cm^3')
+    parser.add_argument('-e', '--energy', type=float, default=1e6,
+                        help='Energy of the source in eV')
+    parser.add_argument('-p', '--particles', type=int, default=1000000,
+                        help='Number of source particles')
+    parser.add_argument('-t', '--electron-treatment', choices=('ttb', 'led'),
+                        default='ttb', help='Whether to use local energy'
+                        'deposition or thick-target bremsstrahlung treatment '
+                        'for electrons and positrons.')
+    parser.add_argument('-c', '--code', choices=['mcnp', 'serpent'],
+                        default='mcnp',
+                        help='Code to validate OpenMC against.')
+    parser.add_argument('-s', '--suffix', default='12p',
+                        help='Photon cross section suffix')
+    parser.add_argument('-x', '--xsdir', type=str, help='XSDIR directory '
+                        'file. If specified, it will be used to locate the '
+                        'ACE table corresponding to the given nuclide and '
+                        'suffix, and an HDF5 library that can be used by '
+                        'OpenMC will be created from the data.')
+    parser.add_argument('-g', '--serpent_pdata', type=str, help='Directory '
+                        'containing the additional data files needed for '
+                        'photon physics in Serpent.')
+    parser.add_argument('-o', '--output-name', type=str,
+                        help='Name used for output.')
+    args = parser.parse_args()
+
+    model = PhotonPhysicsModel(
+        args.element, args.density, [(args.element, 1.)], args.energy,
+        args.particles, args.electron_treatment, args.code, args.suffix,
+        args.xsdir, args.serpent_pdata, args.output_name
+    )
+    model.run()
+
+
+class PhotonPhysicsModel(object):
+    """Monoenergetic, isotropic point source in an infinite geometry.
 
     Parameters
     ----------
@@ -25,8 +63,8 @@ class PhotonProductionModel(object):
         Name of the material.
     density : float
         Density of the material in g/cm^3.
-    nuclides : list of tuple
-        List in which each item is a 2-tuple consisting of a nuclide string and
+    elements : list of tuple
+        List in which each item is a 2-tuple consisting of an element string and
         the atom fraction.
     energy : float
         Energy of the source (eV)
@@ -38,12 +76,10 @@ class PhotonProductionModel(object):
     code : {'mcnp', 'serpent'}
         Code to validate against
     suffix : str
-        Neutron cross section suffix
-    photon_suffix : str
         Photon cross section suffix
     xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
-        table corresponding to the given nuclide and suffix, and an HDF5
+        table corresponding to the given element and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
     serpent_pdata : str
         Directory containing the additional data files needed for photon
@@ -57,8 +93,8 @@ class PhotonProductionModel(object):
         Name of the material.
     density : float
         Density of the material in g/cm^3.
-    nuclides : list of tuple
-        List in which each item is a 2-tuple consisting of a nuclide string and
+    elements : list of tuple
+        List in which each item is a 2-tuple consisting of an element string and
         the atom fraction.
     energy : float
         Energy of the source (eV)
@@ -70,26 +106,20 @@ class PhotonProductionModel(object):
     code : {'mcnp', 'serpent'}
         Code to validate against
     suffix : str
-        Neutron cross section suffix
-    photon_suffix : str
         Photon cross section suffix
     xsdir : str
         XSDIR directory file. If specified, it will be used to locate the ACE
-        table corresponding to the given nuclide and suffix, and an HDF5
+        table corresponding to the given element and suffix, and an HDF5
         library that can be used by OpenMC will be created from the data.
     serpent_pdata : str
         Directory containing the additional data files needed for photon
         physics in Serpent.
     name : str
         Name used for output.
-    temperature : float
-        Temperature (Kelvin) of the cross section data
     bins : int
         Number of bins in the energy grid
     batches : int
         Number of batches to simulate
-    max_energy : float
-        Upper limit of energy grid (eV)
     cutoff_energy: float
         Photon cutoff energy (eV)
     openmc_dir : pathlib.Path
@@ -101,10 +131,9 @@ class PhotonProductionModel(object):
 
     """
 
-    def __init__(self, material, density, nuclides, energy, particles,
-                 electron_treatment, code, suffix, photon_suffix, xsdir=None,
+    def __init__(self, material, density, elements, energy, particles,
+                 electron_treatment, code, suffix, xsdir=None,
                  serpent_pdata=None, name=None):
-        self._temperature = None
         self._bins = 500
         self._batches = 100
         self._cutoff_energy = 1.e3
@@ -113,16 +142,19 @@ class PhotonProductionModel(object):
 
         self.material = material
         self.density = density
-        self.nuclides = nuclides
+        self.elements = elements
         self.energy = energy
         self.particles = particles
         self.electron_treatment = electron_treatment
         self.code = code
         self.suffix = suffix
-        self.photon_suffix = photon_suffix
         self.xsdir = xsdir
         self.serpent_pdata = serpent_pdata
         self.name = name
+
+    @property
+    def energy(self):
+        return self._energy
 
     @property
     def particles(self):
@@ -137,23 +169,12 @@ class PhotonProductionModel(object):
         return self._suffix
 
     @property
-    def photon_suffix(self):
-        return self._photon_suffix
-
-    @property
     def xsdir(self):
         return self._xsdir
 
     @property
     def serpent_pdata(self):
         return self._serpent_pdata
-
-    @property
-    def max_energy(self):
-        if self.energy < 1.e6:
-            return 1.e7
-        else:
-            return self.energy * 10
 
     @property
     def openmc_dir(self):
@@ -172,13 +193,18 @@ class PhotonProductionModel(object):
     @property
     def table_names(self):
         table_names = []
-        for nuclide, _ in self.nuclides:
-            table_names.append(zaid(nuclide, self.suffix))
-            Z, A, m = openmc.data.zam(nuclide)
-            photon_table = f'{1000*Z}.{self.photon_suffix}'
-            if photon_table not in table_names:
-                table_names.append(photon_table)
-            return table_names
+        for element, _ in self.elements:
+            Z = ATOMIC_NUMBER[element]
+            table_names.append(f'{1000*Z}.{self.suffix}')
+        return table_names
+
+    @energy.setter
+    def energy(self, energy):
+        if energy <= self._cutoff_energy:
+            msg = (f'Energy {energy} eV must be above the cutoff energy '
+                   f'{self._cutoff_energy} eV.')
+            raise ValueError(msg)
+        self._energy = energy
 
     @particles.setter
     def particles(self, particles):
@@ -202,18 +228,10 @@ class PhotonProductionModel(object):
 
     @suffix.setter
     def suffix(self, suffix):
-        match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)|[0][3,6,9]c|[1][2,5,8]c'
-        if not re.match(match, suffix):
+        if not re.match('0[1-4]p|63p|84p|12p', suffix):
             msg = f'Unsupported cross section suffix {suffix}.'
             raise ValueError(msg)
         self._suffix = suffix
-
-    @photon_suffix.setter
-    def photon_suffix(self, photon_suffix):
-        if not re.match('0[1-4]p|63p|84p|12p', photon_suffix):
-            msg = f'Unsupported photon cross section suffix {photon_suffix}.'
-            raise ValueError(msg)
-        self._photon_suffix = photon_suffix
 
     @xsdir.setter
     def xsdir(self, xsdir):
@@ -244,47 +262,36 @@ class PhotonProductionModel(object):
         """
         # Define material
         mat = openmc.Material()
-        for nuclide, fraction in self.nuclides:
-            mat.add_nuclide(nuclide, fraction)
+        for element, fraction in self.elements:
+            mat.add_element(element, fraction)
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.xsdir is not None:
             xs_path = (self.openmc_dir / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
         materials.export_to_xml(self.openmc_dir / 'materials.xml')
- 
-        # Instantiate surfaces
-        cyl = openmc.XCylinder(boundary_type='vacuum', r=1.e-6)
-        px1 = openmc.XPlane(boundary_type='vacuum', x0=-1.)
-        px2 = openmc.XPlane(boundary_type='transmission', x0=1.)
-        px3 = openmc.XPlane(boundary_type='vacuum', x0=1.e9)
- 
-        # Instantiate cells
-        inner_cyl_left = openmc.Cell()
-        inner_cyl_right = openmc.Cell()
-        outer_cyl = openmc.Cell()
- 
-        # Set cells regions and materials
-        inner_cyl_left.region = -cyl & +px1 & -px2
-        inner_cyl_right.region = -cyl & +px2 & -px3
-        outer_cyl.region = ~(-cyl & +px1 & -px3)
-        inner_cyl_right.fill = mat
- 
-        # Create root universe and export to XML
-        geometry = openmc.Geometry([inner_cyl_left, inner_cyl_right, outer_cyl])
+
+        # Set up geometry
+        x1 = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
+        x2 = openmc.XPlane(x0=+1.e9, boundary_type='reflective')
+        y1 = openmc.YPlane(y0=-1.e9, boundary_type='reflective')
+        y2 = openmc.YPlane(y0=+1.e9, boundary_type='reflective')
+        z1 = openmc.ZPlane(z0=-1.e9, boundary_type='reflective')
+        z2 = openmc.ZPlane(z0=+1.e9, boundary_type='reflective')
+        cell = openmc.Cell(fill=materials)
+        cell.region = +x1 & -x2 & +y1 & -y2 & +z1 & -z2
+        geometry = openmc.Geometry([cell])
         geometry.export_to_xml(self.openmc_dir / 'geometry.xml')
- 
+
         # Define source
         source = openmc.Source()
         source.space = openmc.stats.Point((0,0,0))
-        source.angle = openmc.stats.Monodirectional()
+        source.angle = openmc.stats.Isotropic()
         source.energy = openmc.stats.Discrete([self.energy], [1.])
-        source.particle = 'neutron'
- 
+        source.particle = 'photon'
+
         # Settings
         settings = openmc.Settings()
-        if self._temperature is not None:
-            settings.temperature = {'default': self._temperature}
         settings.source = source
         settings.particles = self.particles // self._batches
         settings.run_mode = 'fixed source'
@@ -294,17 +301,14 @@ class PhotonProductionModel(object):
         settings.cutoff = {'energy_photon' : self._cutoff_energy}
         settings.export_to_xml(self.openmc_dir / 'settings.xml')
  
-        # Define filters
-        surface_filter = openmc.SurfaceFilter(cyl)
-        particle_filter = openmc.ParticleFilter('photon')
+        # Define tallies
         energy_bins = np.logspace(np.log10(self._cutoff_energy),
-                                  np.log10(self.max_energy), self._bins+1)
+                                  np.log10(1.0001*self.energy), self._bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
- 
-        # Create tallies and export to XML
+        particle_filter = openmc.ParticleFilter('photon')
         tally = openmc.Tally(name='tally')
-        tally.filters = [surface_filter, energy_filter, particle_filter]
-        tally.scores = ['current']
+        tally.filters = [energy_filter, particle_filter]
+        tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
         tallies.export_to_xml(self.openmc_dir / 'tallies.xml')
 
@@ -313,25 +317,18 @@ class PhotonProductionModel(object):
 
         """
         # Create the problem description
-        lines = ['Broomstick problem']
+        lines = ['Point source in infinite geometry']
 
-        # Create the cell cards: material 1 inside cylinder, void outside
+        # Create the cell cards: material 1 inside sphere, void outside
         lines.append('c --- Cell cards ---')
-        if self._temperature is not None:
-            kT = self._temperature * openmc.data.K_BOLTZMANN * 1e-6
-            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1 tmp={kT}')
-        else:
-            lines.append(f'1 1 -{self.density} -4 6 -7 imp:n,p=1')
-        lines.append('2 0 -4 5 -6 imp:n,p=1')
-        lines.append('3 0 #(-4 5 -7) imp:n,p=0')
+        lines.append(f'1 1 -{self.density} -1 imp:p=1')
+        lines.append('2 0 1 imp:p=0')
         lines.append('')
 
-        # Create the surface cards: cylinder with radius 1e-6 cm along x-axis
+        # Create the surface cards: box centered on origin with 2e9 cm sides`
+        # and reflective boundary conditions
         lines.append('c --- Surface cards ---')
-        lines.append('4 cx 1.0e-6')
-        lines.append('5 px -1.0')
-        lines.append('6 px 1.0')
-        lines.append('7 px 1.0e9')
+        lines.append('*1 rpp -1.e9 1e9 -1.e9 1.e9 -1.e9 1.e9')
         lines.append('')
 
         # Create the data cards
@@ -339,35 +336,30 @@ class PhotonProductionModel(object):
 
         # Materials
         material_card = 'm1'
-        for nuclide, fraction in self.nuclides:
-            if re.match('(71[0-6]nc)', self.suffix):
-                name = szax(nuclide, self.suffix)
-            else:
-                name = zaid(nuclide, self.suffix)
-            material_card += f' {name} -{fraction} plib={self.photon_suffix}'
+        for element, fraction in self.elements:
+            Z = openmc.data.ATOMIC_NUMBER[element]
+            material_card += f' {Z}000.{self.suffix} -{fraction}'
         lines.append(material_card)
 
         # Energy in MeV
         energy = self.energy * 1e-6
-        max_energy = self.max_energy * 1e-6
         cutoff_energy = self._cutoff_energy * 1e-6
 
-        # Physics: neutron and neutron-induced photon, 1 keV photon cutoff energy
+        # Physics: photon transport, 1 keV photon cutoff energy
         if self.electron_treatment == 'led':
             flag = 1
         else:
             flag = 'j'
-        lines.append('mode n p')
+        lines.append('mode p')
         lines.append(f'phys:p j {flag} j j j')
         lines.append(f'cut:p j {cutoff_energy}')
 
-        # Source definition: point source at origin monodirectional along
-        # positive x-axis
-        lines.append(f'sdef cel=2 erg={energy} vec=1 0 0 dir=1 par=1')
+        # Source definition: isotropic point source at center of sphere
+        lines.append(f'sdef cel=1 erg={energy}')
 
-        # Tallies: Photon current over surface
-        lines.append('f1:p 4')
-        lines.append(f'e1 {cutoff_energy} {self._bins-1}ilog {max_energy}')
+        # Tallies: photon flux over cell
+        lines.append('f4:p 1')
+        lines.append(f'e4 {cutoff_energy} {self._bins-1}ilog {1.0001*energy}')
 
         # Problem termination: number of particles to transport
         lines.append(f'nps {self.particles}')
@@ -381,9 +373,9 @@ class PhotonProductionModel(object):
 
         """
         # Create the problem description
-        lines = ['% Broomstick problem']
+        lines = ['% Point source in infinite geometry']
         lines.append('')
- 
+
         # Set the cross section library directory
         if self.xsdir is not None:
             xsdata = (self.other_dir / 'xsdata').resolve()
@@ -393,44 +385,30 @@ class PhotonProductionModel(object):
         lines.append(f'set pdatadir "{self.serpent_pdata}"')
         lines.append('')
 
-        # Create the cell cards: material 1 inside cylinder, void outside
+        # Create the cell cards: material 1 inside sphere, void outside
         lines.append('% --- Cell cards ---')
-        lines.append('cell 1 0 m1 -1 3 -4')
-        lines.append('cell 2 0 void -1 2 -3')
-        lines.append('cell 3 0 outside 1')
-        lines.append('cell 4 0 outside -2')
-        lines.append('cell 5 0 outside 4')
+        lines.append('cell 1 0 m1 -1')
+        lines.append('cell 2 0 outside 1')
         lines.append('')
 
-        # Create the surface cards: cylinder with radius 1e-6 cm along x-axis
+        # Create the surface cards: box centered on origin with 2e9 cm sides`
+        # and reflective boundary conditions
         lines.append('% --- Surface cards ---')
-        lines.append('surf 1 cylx 0.0 0.0 1.0e-6')
-        lines.append('surf 2 px -1.0')
-        lines.append('surf 3 px 1.0')
-        lines.append('surf 4 px 1.0e9')
+        lines.append('surf 1 cube 0.0 0.0 0.0 1.e9')
+
+        # Reflective boundary conditions
+        lines.append('set bc 2')
         lines.append('')
 
         # Create the material cards
         lines.append('% --- Material cards ---')
         lines.append(f'mat m1 -{self.density}')
-        elements = {}
-        for nuclide, fraction in self.nuclides:
-            # Add nuclide data
-            name = zaid(nuclide, self.suffix)
-            lines.append(f'{name} {fraction}')
-
-            # Sum element fractions
-            Z, A, m = openmc.data.zam(nuclide)
-            name = f'{1000*Z}.{self.photon_suffix}'
-            if name not in elements:
-                elements[name] = fraction
-            else:
-                elements[name] += fraction
 
         # Add element data
-        for name, fraction in elements.items():
-                lines.append(f'{name} {fraction}')
-        lines.append('')
+        for element, fraction in self.elements:
+            Z = ATOMIC_NUMBER[element]
+            name = f'{1000*Z}.{self.suffix}'
+            lines.append(f'{name} {fraction}')
 
         # Turn on unresolved resonance probability treatment
         lines.append('set ures 1')
@@ -441,17 +419,8 @@ class PhotonProductionModel(object):
         else:
             lines.append('set ttb 1')
 
-        # Turn on Doppler broadening of Compton scattered photons (on by
-        # default)
-        lines.append('set cdop 1')
-
-        # Coupled neutron-gamma calculations (0 is off, 1 is analog, 2 is
-        # implicit)
-        lines.append('set ngamma 1')
-
         # Energy in MeV
         energy = self.energy * 1e-6
-        max_energy = self.max_energy * 1e-6
         cutoff_energy = self._cutoff_energy * 1e-6
 
         # Set cutoff energy
@@ -461,15 +430,15 @@ class PhotonProductionModel(object):
         # External source mode with isotropic point source at center of sphere
         lines.append('% --- Set external source mode ---')
         lines.append(f'set nps {self.particles} {self._batches}')
-        lines.append(f'src 1 n se {energy} sp 0.0 0.0 0.0 sd 1.0 0.0 0.0')
+        lines.append(f'src 1 g se {energy} sp 0.0 0.0 0.0')
         lines.append('')
 
-        # Detector definition: photon current over surface
+        # Detector definition: flux energy spectrum
         lines.append('% --- Detector definition ---')
-        lines.append('det 1 p de 1 ds 1 1')
+        lines.append('det 1 de 1 dc 1')
 
         # Energy grid definition: equal lethargy spacing
-        lines.append(f'ene 1 3 {self._bins} {cutoff_energy} {max_energy}')
+        lines.append(f'ene 1 3 {self._bins} {cutoff_energy} {1.0001*energy}')
         lines.append('')
 
         # Write the problem
@@ -524,15 +493,14 @@ class PhotonProductionModel(object):
         ax1.grid(b=False, axis='both', which='both')
         ax2.tick_params(axis='y', which='both', right=False)
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
-
+ 
         # Energy in MeV
         energy = self.energy * 1e-6
-        max_energy = self.max_energy * 1e-6
 
         # Set axes labels and limits
-        ax1.set_xlim([cutoff_energy, max_energy])
+        ax1.set_xlim([cutoff_energy, energy])
         ax1.set_xlabel('Energy (MeV)', size=12)
-        ax1.set_ylabel('Particle Current', size=12)
+        ax1.set_ylabel('Spectrum', size=12)
         ax1.legend()
         ax2.set_ylabel("Relative error", size=12)
         title = f'{self.material}, {energy:.1e} MeV Source'
@@ -544,8 +512,6 @@ class PhotonProductionModel(object):
             name = self.name
         else:
             name = f'{self.material}-{energy:.1e}MeV'
-            if self._temperature is not None:
-                name +=  f'-{self._temperature:.1f}K'
         plt.savefig(Path('plots') / f'{name}.png', bbox_inches='tight')
         plt.close()
 
@@ -553,16 +519,27 @@ class PhotonProductionModel(object):
         """Generate inputs, run problem, and plot results.
  
         """
-        # Create HDF5 cross section library and Serpent XSDATA file
+        # Create the HDF5 library
         if self.xsdir is not None:
             path = self.other_dir if self.code == 'serpent' else None
             create_library(self.xsdir, self.table_names, self.openmc_dir, path)
 
-            # Get the temperature of the cross section data
-            nuclide = self.nuclides[0][0]
-            f = h5py.File(self.openmc_dir / (nuclide + '.h5'), 'r')
-            temperature = list(f[nuclide]['kTs'].values())[0][()]
-            self._temperature = temperature / K_BOLTZMANN
+            # TODO: Currently the neutron libraries are still read in to OpenMC
+            # even when doing pure photon transport, so we need to locate them and
+            # register them with the library.
+            path = os.getenv('OPENMC_CROSS_SECTIONS')
+            lib = openmc.data.DataLibrary.from_xml(path)
+
+            path = self.openmc_dir / 'cross_sections.xml'
+            data_lib = openmc.data.DataLibrary.from_xml(path)
+
+            for element, fraction in self.elements:
+                element = openmc.Element(element)
+                for nuclide, _, _ in element.expand(fraction, 'ao'):
+                    h5_file = lib.get_by_material(nuclide)['path']
+                    data_lib.register_file(h5_file)
+
+            data_lib.export_to_xml(path)
 
         # Generate input files
         self._make_openmc_input()
@@ -576,22 +553,25 @@ class PhotonProductionModel(object):
             if self.xsdir is not None:
                 args.append(f'XSDIR={self.xsdir}')
 
-            # Remove old MCNP output files
-            for f in ('outp', 'runtpe'):
-                try:
-                    os.remove(self.other_dir / f)
-                except OSError:
-                    pass
-
+        # Remove old MCNP output files
+        for f in ('outp', 'runtpe'):
+            try:
+                os.remove(self.other_dir / f)
+            except OSError:
+                pass
+ 
         # Run code and capture and print output
-        p = subprocess.Popen(args, cwd=self.code, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, universal_newlines=True)
+        p = subprocess.Popen(
+            args, cwd=self.other_dir, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, universal_newlines=True
+        )
+
         while True:
             line = p.stdout.readline()
             if not line and p.poll() is not None:
                 break
             print(line, end='')
 
-        openmc.run(cwd='openmc')
+        openmc.run(cwd=self.openmc_dir)
 
         self._plot()
