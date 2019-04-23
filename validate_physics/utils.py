@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+import numpy as np
+
 import openmc.data
 from openmc.data import K_BOLTZMANN, NEUTRON_MASS
 
@@ -373,7 +375,7 @@ def szax(nuclide, suffix):
     return f'{1000000*m + 1000*Z + A}.{suffix}'
 
 
-def create_library(xsdir, table_names, hdf5_path, xsdata_path=None):
+def create_library(xsdir, table_names, hdf5_dir, xsdata_dir=None):
     """Convert the ACE data from the MCNP or Serpent distribution into an
     HDF5 library that can be used by OpenMC and create and XSDATA directory
     file for use with Serpent.
@@ -384,11 +386,11 @@ def create_library(xsdir, table_names, hdf5_path, xsdata_path=None):
         Path of the XSDIR directory file
     table_names : str or iterable
         Names of the ACE tables to convert
-    hdf5_path : str
+    hdf5_dir : str
         Directory to write the HDF5 library to
-    xsdata_path : str
+    xsdata_dir : str
         If specified, an XSDATA directory file containing entries for each of
-        the table names provided will be written to this path.
+        the table names provided will be written to this directory.
 
     """
     # Create data library
@@ -418,13 +420,66 @@ def create_library(xsdir, table_names, hdf5_path, xsdata_path=None):
             raise ValueError(msg)
 
         # Export HDF5 files and register with library
-        h5_file = Path(hdf5_path) / f'{data.name}.h5'
+        h5_file = Path(hdf5_dir) / f'{data.name}.h5'
         data.export_to_hdf5(h5_file, 'w')
         data_lib.register_file(h5_file)
 
     # Write cross_sections.xml
-    data_lib.export_to_xml(Path(hdf5_path) / 'cross_sections.xml')
+    data_lib.export_to_xml(Path(hdf5_dir) / 'cross_sections.xml')
 
     # Write the Serpent XSDATA file
-    if xsdata_path is not None:
-        xsdir.export_to_xsdata(xsdata_path, table_names)
+    if xsdata_dir is not None:
+        xsdir.export_to_xsdata(Path(xsdata_dir) / 'xsdata', table_names)
+
+
+def read_results(code, filename):
+    """Read the energy, mean, and standard deviation from the output
+
+    Parameters
+    ----------
+    code : {'openmc', 'mcnp', 'serpent'}
+        Code which produced the output file
+    filename : str
+        Path to the output file
+
+    Returns
+    -------
+    energy : numpy.ndarray
+        Energy bin values [MeV]
+    mean : numpy.ndarray
+        Sample mean of the tally
+    std_dev : numpy.ndarray
+        Sample standard deviation of the tally
+
+    """
+    if code == 'openmc':
+        with openmc.StatePoint(filename) as sp:
+            t = sp.get_tally(name='tally')
+            energy = t.find_filter(openmc.EnergyFilter).bins[:,1]*1e-6
+            mean = t.mean[:,0,0]
+            std_dev = t.std_dev[:,0,0]
+
+    elif code == 'mcnp':
+        with open(filename, 'r') as f:
+            text = f.read()
+            p = text.find('1tally')
+            p = text.find('energy', p) + 10
+            q = text.find('total', p)
+            t = np.fromiter(text[p:q].split(), float)
+            t.shape = (len(t) // 3, 3)
+            energy = t[1:,0]
+            mean = t[1:,1]
+            std_dev = t[1:,2]
+
+    elif code == 'serpent':
+        with open(filename, 'r') as f:
+            text = re.split('\[|\]', f.read())
+            t = np.fromiter(text[1].split(), float)
+            t = t.reshape(len(t) // 12, 12)
+            e = np.fromiter(text[3].split(), float)
+            e = e.reshape(len(e) // 3, 3)
+            energy = e[:,1]
+            mean = t[:,10]
+            std_dev = t[:,11]
+
+    return energy, mean, std_dev

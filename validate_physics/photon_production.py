@@ -12,7 +12,7 @@ import numpy as np
 
 import openmc
 from openmc.data import K_BOLTZMANN, NEUTRON_MASS
-from .utils import zaid, szax, create_library
+from .utils import zaid, szax, create_library, read_results
 
 
 class PhotonProductionModel(object):
@@ -92,9 +92,9 @@ class PhotonProductionModel(object):
         Upper limit of energy grid (eV)
     cutoff_energy: float
         Photon cutoff energy (eV)
-    directory_openmc : pathlib.Path
+    openmc_dir : pathlib.Path
         Working directory for OpenMC
-    directory_other : pathlib.Path
+    other_dir : pathlib.Path
         Working directory for MCNP or Serpent
     table_names : list of str
         Names of the ACE tables used in the model
@@ -108,8 +108,8 @@ class PhotonProductionModel(object):
         self._bins = 500
         self._batches = 100
         self._cutoff_energy = 1.e3
-        self._directory_openmc = None
-        self._directory_other = None
+        self._openmc_dir = None
+        self._other_dir = None
 
         self.material = material
         self.density = density
@@ -156,18 +156,18 @@ class PhotonProductionModel(object):
             return self.energy * 10
 
     @property
-    def directory_openmc(self):
-        if self._directory_openmc is None:
-            self._directory_openmc = Path('openmc')
-            os.makedirs(self._directory_openmc, exist_ok=True)
-        return self._directory_openmc
+    def openmc_dir(self):
+        if self._openmc_dir is None:
+            self._openmc_dir = Path('openmc')
+            os.makedirs(self._openmc_dir, exist_ok=True)
+        return self._openmc_dir
 
     @property
-    def directory_other(self):
-        if self._directory_other is None:
-            self._directory_other = Path(self.code)
-            os.makedirs(self._directory_other, exist_ok=True)
-        return self._directory_other
+    def other_dir(self):
+        if self._other_dir is None:
+            self._other_dir = Path(self.code)
+            os.makedirs(self._other_dir, exist_ok=True)
+        return self._other_dir
 
     @property
     def table_names(self):
@@ -249,9 +249,9 @@ class PhotonProductionModel(object):
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.xsdir is not None:
-            xs_path = (self.directory_openmc / 'cross_sections.xml').resolve()
+            xs_path = (self.openmc_dir / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(self.directory_openmc / 'materials.xml')
+        materials.export_to_xml(self.openmc_dir / 'materials.xml')
  
         # Instantiate surfaces
         cyl = openmc.XCylinder(boundary_type='vacuum', r=1.e-6)
@@ -272,7 +272,7 @@ class PhotonProductionModel(object):
  
         # Create root universe and export to XML
         geometry = openmc.Geometry([inner_cyl_left, inner_cyl_right, outer_cyl])
-        geometry.export_to_xml(self.directory_openmc / 'geometry.xml')
+        geometry.export_to_xml(self.openmc_dir / 'geometry.xml')
  
         # Define source
         source = openmc.Source()
@@ -292,7 +292,7 @@ class PhotonProductionModel(object):
         settings.photon_transport = True
         settings.electron_treatment = self.electron_treatment
         settings.cutoff = {'energy_photon' : self._cutoff_energy}
-        settings.export_to_xml(self.directory_openmc / 'settings.xml')
+        settings.export_to_xml(self.openmc_dir / 'settings.xml')
  
         # Define filters
         surface_filter = openmc.SurfaceFilter(cyl)
@@ -302,11 +302,11 @@ class PhotonProductionModel(object):
         energy_filter = openmc.EnergyFilter(energy_bins)
  
         # Create tallies and export to XML
-        tally = openmc.Tally(name='photon current')
+        tally = openmc.Tally(name='tally')
         tally.filters = [surface_filter, energy_filter, particle_filter]
         tally.scores = ['current']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(self.directory_openmc / 'tallies.xml')
+        tallies.export_to_xml(self.openmc_dir / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
@@ -373,7 +373,7 @@ class PhotonProductionModel(object):
         lines.append(f'nps {self.particles}')
 
         # Write the problem
-        with open(self.directory_other / 'inp', 'w') as f:
+        with open(self.other_dir / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _make_serpent_input(self):
@@ -386,7 +386,7 @@ class PhotonProductionModel(object):
  
         # Set the cross section library directory
         if self.xsdir is not None:
-            xsdata = (self.directory_other / 'xsdata').resolve()
+            xsdata = (self.other_dir / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
 
         # Set the photon data directory
@@ -473,78 +473,26 @@ class PhotonProductionModel(object):
         lines.append('')
 
         # Write the problem
-        with open(self.directory_other / 'input', 'w') as f:
+        with open(self.other_dir / 'input', 'w') as f:
             f.write('\n'.join(lines))
-
-    def _read_openmc_results(self):
-        """Extract the results from the OpenMC statepoint
-
-        """
-        # Read the results from the OpenMC statepoint
-        path = self.directory_openmc / f'statepoint.{self._batches}.h5'
-
-        with openmc.StatePoint(path) as sp:
-            t = sp.get_tally(name='photon current')
-            x = t.find_filter(openmc.EnergyFilter).bins[:,1] * 1e-6
-            y = t.mean[:,0,0]
-            sd = t.std_dev[:,0,0]
-
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
-
-    def _read_mcnp_results(self):
-        """Extract the results from the MCNP output file
-
-        """
-        with open(self.directory_other / 'outp', 'r') as f:
-            text = f.read()
-            p = text.find(f'1tally{1: >9}')
-            p = text.find('energy', p) + 10
-            q = text.find('total', p)
-            t = np.fromiter(text[p:q].split(), float)
-            t.shape = (len(t) // 3, 3)
-            x = t[1:,0]
-            y = t[1:,1]
-            sd = t[1:,2]
- 
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
-
-    def _read_serpent_results(self):
-        """Extract the results from the Serpent output file
-
-        """
-        with open(self.directory_other / 'input_det0.m', 'r') as f:
-            text = f.read().split()
-            n = self._bins
-            t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
-            e = np.fromiter(text[7+12*n:7+15*n], float).reshape(n, 3)
-            x = e[:,1]
-            y = t[:,10]
-            sd = t[:,11]
-
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
 
     def _plot(self):
         """Extract and plot the results
  
         """
         # Read results
-        x1, y1, _ = self._read_openmc_results()
+        path = self.openmc_dir / f'statepoint.{self._batches}.h5'
+        x1, y1, _ = read_results('openmc', path)
         if self.code == 'serpent':
-            x2, y2, sd = self._read_serpent_results()
+            path = self.other_dir / 'input_det0.m'
         else:
-            x2, y2, sd = self._read_mcnp_results()
+            path = self.other_dir / 'outp'
+        x2, y2, sd = read_results(self.code, path)
+
+        # Normalize the spectra
+        cutoff_energy = self._cutoff_energy * 1e-6
+        y1 /= np.diff(np.insert(x1, 0, cutoff_energy))*sum(y1)
+        y2 /= np.diff(np.insert(x2, 0, cutoff_energy))*sum(y2)
 
         # Compute the relative error
         err = np.zeros_like(y2)
@@ -580,7 +528,6 @@ class PhotonProductionModel(object):
         # Energy in MeV
         energy = self.energy * 1e-6
         max_energy = self.max_energy * 1e-6
-        cutoff_energy = self._cutoff_energy * 1e-6
 
         # Set axes labels and limits
         ax1.set_xlim([cutoff_energy, max_energy])
@@ -606,21 +553,20 @@ class PhotonProductionModel(object):
         """Generate inputs, run problem, and plot results.
  
         """
+        # Create HDF5 cross section library and Serpent XSDATA file
         if self.xsdir is not None:
-            if self.code == 'serpent':
-                xsdata_path = self.directory_other / 'xsdata'
-            else:
-                xsdata_path = None
-            create_library(self.xsdir, self.table_names, self.directory_openmc,
-                           xsdata_path)
+            path = self.other_dir if self.code == 'serpent' else None
+            create_library(self.xsdir, self.table_names, self.openmc_dir, path)
 
             # Get the temperature of the cross section data
             nuclide = self.nuclides[0][0]
-            f = h5py.File(self.directory_openmc / (nuclide + '.h5'), 'r')
+            f = h5py.File(self.openmc_dir / (nuclide + '.h5'), 'r')
             temperature = list(f[nuclide]['kTs'].values())[0][()]
             self._temperature = temperature / K_BOLTZMANN
 
         # Generate input files
+        self._make_openmc_input()
+
         if self.code == 'serpent':
             self._make_serpent_input()
             args = ['sss2', 'input']
@@ -633,11 +579,9 @@ class PhotonProductionModel(object):
             # Remove old MCNP output files
             for f in ('outp', 'runtpe'):
                 try:
-                    os.remove(self.directory_other / f)
+                    os.remove(self.other_dir / f)
                 except OSError:
                     pass
-
-        self._make_openmc_input()
 
         # Run code and capture and print output
         p = subprocess.Popen(args, cwd=self.code, stdout=subprocess.PIPE,

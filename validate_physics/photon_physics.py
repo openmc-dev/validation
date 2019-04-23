@@ -11,7 +11,7 @@ import numpy as np
 
 import openmc
 from openmc.data import ATOMIC_NUMBER, NEUTRON_MASS, K_BOLTZMANN
-from .utils import create_library
+from .utils import create_library, read_results
 
 
 class PhotonPhysicsModel(object):
@@ -82,9 +82,9 @@ class PhotonPhysicsModel(object):
         Number of batches to simulate
     cutoff_energy: float
         Photon cutoff energy (eV)
-    directory_openmc : pathlib.Path
+    openmc_dir : pathlib.Path
         Working directory for OpenMC
-    directory_other : pathlib.Path
+    other_dir : pathlib.Path
         Working directory for MCNP or Serpent
     table_names : list of str
         Names of the ACE tables used in the model
@@ -97,8 +97,8 @@ class PhotonPhysicsModel(object):
         self._bins = 500
         self._batches = 100
         self._cutoff_energy = 1.e3
-        self._directory_openmc = None
-        self._directory_other = None
+        self._openmc_dir = None
+        self._other_dir = None
 
         self.material = material
         self.density = density
@@ -137,18 +137,18 @@ class PhotonPhysicsModel(object):
         return self._serpent_pdata
 
     @property
-    def directory_openmc(self):
-        if self._directory_openmc is None:
-            self._directory_openmc = Path('openmc')
-            os.makedirs(self._directory_openmc, exist_ok=True)
-        return self._directory_openmc
+    def openmc_dir(self):
+        if self._openmc_dir is None:
+            self._openmc_dir = Path('openmc')
+            os.makedirs(self._openmc_dir, exist_ok=True)
+        return self._openmc_dir
 
     @property
-    def directory_other(self):
-        if self._directory_other is None:
-            self._directory_other = Path(self.code)
-            os.makedirs(self._directory_other, exist_ok=True)
-        return self._directory_other
+    def other_dir(self):
+        if self._other_dir is None:
+            self._other_dir = Path(self.code)
+            os.makedirs(self._other_dir, exist_ok=True)
+        return self._other_dir
 
     @property
     def table_names(self):
@@ -227,9 +227,9 @@ class PhotonPhysicsModel(object):
         mat.set_density('g/cm3', self.density)
         materials = openmc.Materials([mat])
         if self.xsdir is not None:
-            xs_path = (self.directory_openmc / 'cross_sections.xml').resolve()
+            xs_path = (self.openmc_dir / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
-        materials.export_to_xml(self.directory_openmc / 'materials.xml')
+        materials.export_to_xml(self.openmc_dir / 'materials.xml')
 
         # Set up geometry
         x1 = openmc.XPlane(x0=-1.e9, boundary_type='reflective')
@@ -241,7 +241,7 @@ class PhotonPhysicsModel(object):
         cell = openmc.Cell(fill=materials)
         cell.region = +x1 & -x2 & +y1 & -y2 & +z1 & -z2
         geometry = openmc.Geometry([cell])
-        geometry.export_to_xml(self.directory_openmc / 'geometry.xml')
+        geometry.export_to_xml(self.openmc_dir / 'geometry.xml')
 
         # Define source
         source = openmc.Source()
@@ -259,18 +259,18 @@ class PhotonPhysicsModel(object):
         settings.photon_transport = True
         settings.electron_treatment = self.electron_treatment
         settings.cutoff = {'energy_photon' : self._cutoff_energy}
-        settings.export_to_xml(self.directory_openmc / 'settings.xml')
+        settings.export_to_xml(self.openmc_dir / 'settings.xml')
  
         # Define tallies
         energy_bins = np.logspace(np.log10(self._cutoff_energy),
                                   np.log10(1.0001*self.energy), self._bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
         particle_filter = openmc.ParticleFilter('photon')
-        tally = openmc.Tally(name='photon flux')
+        tally = openmc.Tally(name='tally')
         tally.filters = [energy_filter, particle_filter]
         tally.scores = ['flux']
         tallies = openmc.Tallies([tally])
-        tallies.export_to_xml(self.directory_openmc / 'tallies.xml')
+        tallies.export_to_xml(self.openmc_dir / 'tallies.xml')
 
     def _make_mcnp_input(self):
         """Generate the MCNP input file
@@ -325,7 +325,7 @@ class PhotonPhysicsModel(object):
         lines.append(f'nps {self.particles}')
 
         # Write the problem
-        with open(self.directory_other / 'inp', 'w') as f:
+        with open(self.other_dir / 'inp', 'w') as f:
             f.write('\n'.join(lines))
 
     def _make_serpent_input(self):
@@ -338,7 +338,7 @@ class PhotonPhysicsModel(object):
 
         # Set the cross section library directory
         if self.xsdir is not None:
-            xsdata = (self.directory_other / 'xsdata').resolve()
+            xsdata = (self.other_dir / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
 
         # Set the photon data directory
@@ -402,77 +402,26 @@ class PhotonPhysicsModel(object):
         lines.append('')
 
         # Write the problem
-        with open(self.directory_other / 'input', 'w') as f:
+        with open(self.other_dir / 'input', 'w') as f:
             f.write('\n'.join(lines))
-
-    def _read_openmc_results(self):
-        """Extract the results from the OpenMC statepoint
-
-        """
-        # Read the results from the OpenMC statepoint
-        path = self.directory_openmc / f'statepoint.{self._batches}.h5'
-        with openmc.StatePoint(path) as sp:
-            t = sp.get_tally(name='photon flux')
-            x = t.find_filter(openmc.EnergyFilter).bins[:,1] * 1e-6
-            y = t.mean[:,0,0]
-            sd = t.std_dev[:,0,0]
-
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
-
-    def _read_mcnp_results(self):
-        """Extract the results from the MCNP output file
-
-        """
-        with open(self.directory_other / 'outp', 'r') as f:
-            text = f.read()
-            p = text.find('1tally')
-            p = text.find('energy', p) + 10
-            q = text.find('total', p)
-            t = np.fromiter(text[p:q].split(), float)
-            t.shape = (len(t) // 3, 3)
-            x = t[1:,0]
-            y = t[1:,1]
-            sd = t[1:,2]
- 
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
-
-    def _read_serpent_results(self):
-        """Extract the results from the Serpent output file
-
-        """
-        with open(self.directory_other / 'input_det0.m', 'r') as f:
-            text = f.read().split()
-            n = self._bins
-            t = np.fromiter(text[3:3+12*n], float).reshape(n, 12)
-            e = np.fromiter(text[7+12*n:7+15*n], float).reshape(n, 3)
-            x = e[:,1]
-            y = t[:,10]
-            sd = t[:,11]
-
-        # Normalize the spectrum
-        cutoff_energy = self._cutoff_energy * 1e-6
-        y /= np.diff(np.insert(x, 0, cutoff_energy))*sum(y)
-
-        return x, y, sd
 
     def _plot(self):
         """Extract and plot the results
  
         """
         # Read results
-        x1, y1, _ = self._read_openmc_results()
+        path = self.openmc_dir / f'statepoint.{self._batches}.h5'
+        x1, y1, _ = read_results('openmc', path)
         if self.code == 'serpent':
-            x2, y2, sd = self._read_serpent_results()
+            path = self.other_dir / 'input_det0.m'
         else:
-            x2, y2, sd = self._read_mcnp_results()
+            path = self.other_dir / 'outp'
+        x2, y2, sd = read_results(self.code, path)
+
+        # Normalize the spectra
+        cutoff_energy = self._cutoff_energy * 1e-6
+        y1 /= np.diff(np.insert(x1, 0, cutoff_energy))*sum(y1)
+        y2 /= np.diff(np.insert(x2, 0, cutoff_energy))*sum(y2)
 
         # Compute the relative error
         err = np.zeros_like(y2)
@@ -507,7 +456,6 @@ class PhotonPhysicsModel(object):
  
         # Energy in MeV
         energy = self.energy * 1e-6
-        cutoff_energy = self._cutoff_energy * 1e-6
 
         # Set axes labels and limits
         ax1.set_xlim([cutoff_energy, energy])
@@ -533,12 +481,8 @@ class PhotonPhysicsModel(object):
         """
         # Create the HDF5 library
         if self.xsdir is not None:
-            if self.code == 'serpent':
-                xsdata_path = self.directory_other / 'xsdata'
-            else:
-                xsdata_path = None
-            create_library(self.xsdir, self.table_names, self.directory_openmc,
-                           xsdata_path)
+            path = self.other_dir if self.code == 'serpent' else None
+            create_library(self.xsdir, self.table_names, self.openmc_dir, path)
 
             # TODO: Currently the neutron libraries are still read in to OpenMC
             # even when doing pure photon transport, so we need to locate them and
@@ -546,7 +490,7 @@ class PhotonPhysicsModel(object):
             path = os.getenv('OPENMC_CROSS_SECTIONS')
             lib = openmc.data.DataLibrary.from_xml(path)
 
-            path = self.directory_openmc / 'cross_sections.xml'
+            path = self.openmc_dir / 'cross_sections.xml'
             data_lib = openmc.data.DataLibrary.from_xml(path)
 
             for element, fraction in self.elements:
@@ -558,6 +502,8 @@ class PhotonPhysicsModel(object):
             data_lib.export_to_xml(path)
 
         # Generate input files
+        self._make_openmc_input()
+
         if self.code == 'serpent':
             self._make_serpent_input()
             args = ['sss2', 'input']
@@ -570,15 +516,13 @@ class PhotonPhysicsModel(object):
         # Remove old MCNP output files
         for f in ('outp', 'runtpe'):
             try:
-                os.remove(self.directory_other / f)
+                os.remove(self.other_dir / f)
             except OSError:
                 pass
  
-        self._make_openmc_input()
-
         # Run code and capture and print output
         p = subprocess.Popen(
-            args, cwd=self.directory_other, stdout=subprocess.PIPE,
+            args, cwd=self.other_dir, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, universal_newlines=True
         )
 
@@ -588,6 +532,6 @@ class PhotonPhysicsModel(object):
                 break
             print(line, end='')
 
-        openmc.run(cwd=self.directory_openmc)
+        openmc.run(cwd=self.openmc_dir)
 
         self._plot()
