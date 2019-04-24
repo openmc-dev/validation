@@ -54,7 +54,7 @@ def main():
     model.run()
 
 
-class PhotonPhysicsModel(object):
+class PhotonPhysicsModel:
     """Monoenergetic, isotropic point source in an infinite geometry.
 
     Parameters

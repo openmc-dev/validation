@@ -56,7 +56,7 @@ def main():
     model.run()
 
 
-class PhotonProductionModel(object):
+class PhotonProductionModel:
     """Monoenergetic, monodirectional neutron source directed down a thin,
     infinitely long cylinder ('Broomstick' problem).
 

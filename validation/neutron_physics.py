@@ -51,7 +51,7 @@ def main():
     model.run()
 
 
-class NeutronPhysicsModel(object):
+class NeutronPhysicsModel:
     """Monoenergetic, isotropic point source in an infinite geometry.
 
     Parameters
