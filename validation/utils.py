@@ -190,7 +190,10 @@ class XSDIR(object):
             ACE cross section tables
 
         """
-        table_names = set(table_names)
+        if isinstance(table_names, str):
+            table_names = [table_names]
+        else:
+            table_names = set(table_names)
 
         tables = []
         for name in table_names:
