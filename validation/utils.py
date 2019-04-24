@@ -7,7 +7,7 @@ import openmc.data
 from openmc.data import K_BOLTZMANN, NEUTRON_MASS
 
 
-class XSDIR(object):
+class XSDIR:
     """XSDIR directory file
 
     Parameters
@@ -229,7 +229,7 @@ class XSDIR(object):
         return tables
 
 
-class XSDIRTable(object):
+class XSDIRTable:
     """XSDIR description of a cross section table
 
     Parameters

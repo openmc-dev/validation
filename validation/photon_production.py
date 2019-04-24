@@ -251,7 +251,7 @@ class PhotonProductionModel:
 
     @photon_suffix.setter
     def photon_suffix(self, photon_suffix):
-        if not re.match('0[1-4]p|63p|84p|12p', photon_suffix):
+        if not re.match('12p', photon_suffix):
             msg = f'Unsupported photon cross section suffix {photon_suffix}.'
             raise ValueError(msg)
         self._photon_suffix = photon_suffix

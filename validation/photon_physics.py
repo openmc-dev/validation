@@ -228,7 +228,7 @@ class PhotonPhysicsModel:
 
     @suffix.setter
     def suffix(self, suffix):
-        if not re.match('0[1-4]p|63p|84p|12p', suffix):
+        if not re.match('12p', suffix):
             msg = f'Unsupported cross section suffix {suffix}.'
             raise ValueError(msg)
         self._suffix = suffix
