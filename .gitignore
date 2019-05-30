@@ -19,9 +19,8 @@ serpent/
 plots/
 
 # Benchmarking
-benchmarking/results
-benchmarking/plots
-benchmarking/benchmarks
+results/
+benchmarks/
 
 # macOS
 *.DS_Store

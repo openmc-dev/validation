@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import csv
 import os
 import pathlib
 import time
@@ -8,8 +9,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 import numpy as np
-
-from benchmarking.benchmarks.icsbep.icsbep.icsbep import model_keff
 
 mpl.rcParams['ps.useafm'] = True
 mpl.rcParams['pdf.use14corefonts'] = True
@@ -22,7 +21,39 @@ mpl.rcParams['text.latex.preamble'] = [
 mpl.rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
 
 
+def read_uncertainties():
+    """Read the benchmark model k-effective means and uncertainties.
+
+    Returns
+    -------
+    dict of str to tuple of float
+        Dictionary whose keys are the benchmark model names and values are
+        the k-effective mean and uncertainty
+
+    """
+    cwd = pathlib.Path(__file__).parent
+    model_keff = {}
+    with open(cwd / 'uncertainties.csv', 'r') as csvfile:
+        reader = csv.reader(csvfile, skipinitialspace=True)
+        for benchmark, case, mean, uncertainty in reader:
+            if case:
+                name = '{}/{}'.format(benchmark, case)
+            else:
+                name = benchmark
+            model_keff[name] = (float(mean), float(uncertainty))
+    return model_keff
+
+
 def plot(filename):
+    """For each benchmark case, plot the ratio of the k-effective mean from the
+    calculation to the experimental value along with uncertainties.
+
+    Parameters
+    ----------
+    filename : str
+        Name of the results file produced by the benchmarking script
+
+    """
     timestamp = pathlib.Path(filename).stem
 
     # Get the benchmark names, k-effective mean, and k-effective uncertainty
@@ -37,6 +68,9 @@ def plot(filename):
     # x values for plot (benchmark number)
     n = len(name)
     x = np.arange(1, n+1)
+
+    # Get the benchmark model k-effective means and uncertainties
+    model_keff = read_uncertainties()
 
     labels = []
     unc = np.empty(n)
@@ -84,6 +118,5 @@ def plot(filename):
     lgd = plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), numpoints=1)
 
     # Save plot
-    cwd = pathlib.Path(__file__).parent
-    os.makedirs(cwd / 'plots', exist_ok=True)
-    plt.savefig(cwd / f'plots/{timestamp}.png', bbox_inches='tight')
+    os.makedirs('results', exist_ok=True)
+    plt.savefig(f'results/{timestamp}.png', bbox_inches='tight')

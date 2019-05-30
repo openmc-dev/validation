@@ -12,8 +12,8 @@ from .plot import plot
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--benchmarks', type=str,
-                        default='benchmarks/lists/pst-short',
+    parser.add_argument('-l', '--benchmarks', type=pathlib.Path,
+                        default=pathlib.Path('benchmarks/lists/pst-short'),
                         help='List of benchmarks to run.')
     parser.add_argument('-c', '--cross-sections', type=str,
                         default=os.getenv('OPENMC_CROSS_SECTIONS'),
@@ -35,17 +35,16 @@ def main():
     timestamp = time.strftime("%Y-%m-%d-%H%M%S", current_time)
 
     # Create directory and set filename for results
-    cwd = pathlib.Path(__file__).parent
-    os.makedirs(cwd / 'results', exist_ok=True)
-    outfile = cwd / f'results/{timestamp}.csv'
+    os.makedirs('results', exist_ok=True)
+    outfile = f'results/{timestamp}.csv'
 
     # Get a copy of the benchmarks repository
-    if not (cwd / 'benchmarks').is_dir():
+    if not pathlib.Path('benchmarks').is_dir():
         repo = 'https://github.com/mit-crpg/benchmarks.git'
-        subprocess.Popen(['git', 'clone', repo], cwd=cwd)
+        subprocess.run(['git', 'clone', repo], check=True)
 
     # Get the list of benchmarks to run
-    if not pathlib.Path(args.benchmarks).is_file():
+    if not args.benchmarks.is_file():
         msg = 'Could not locate the benchmark list {}.'.format(args.benchmarks)
         raise ValueError(msg)
     with open(args.benchmarks) as f:
@@ -53,7 +52,8 @@ def main():
 
     # Prepare and run benchmarks
     for benchmark in benchmarks:
-        path = cwd / 'benchmarks' / benchmark
+        openmc.reset_auto_ids()
+        path = pathlib.Path('benchmarks') / benchmark
 
         # Remove old statepoint files
         for f in path.glob('statepoint.*.h5'):
