@@ -10,6 +10,7 @@ setup(
     description='A collection of validation scripts for OpenMC',
     url='https://github.com/openmc-dev/validation',
     packages=['validation', 'benchmarking'],
+    package_data={'benchmarking': ['uncertainties.csv']},
     entry_points={
         'console_scripts': [
             'openmc-validate-neutron-physics=validation.neutron_physics:main',
