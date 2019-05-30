@@ -1,2 +1,26 @@
-__pycache__/
+# Compiled python modules
+*.pyc
+
+# setuptools build and distribution folder
+build/
+dist/
+
+# Python egg metadata
+validation.egg-info
+
+# emacs and vim backups
 *~
+*.swp
+
+# Validation
+openmc/
+mcnp/
+serpent/
+plots/
+
+# Benchmarking
+results/
+benchmarks/
+
+# macOS
+*.DS_Store
