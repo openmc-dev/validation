@@ -34,7 +34,7 @@ def read_uncertainties():
 
 
 def read_results(filename):
-    """Read the data from a file produced by the benchmarking script..
+    """Read the data from a file produced by the benchmarking script.
 
     Parameters
     ----------
@@ -44,10 +44,11 @@ def read_results(filename):
     Returns
     -------
     dict
-        Dictionary with keys 'coe' (numpy.ndarray of the ratio of the mean
-        k-effective values from the calculation to the experimental values),
-        'std' (numpy.ndarray of the k-effective standard deviations from the
-        calculation), 'unc' (numpy.ndarray of the benchmark model
+        Dictionary with keys 'mean' (numpy.ndarray of the mean k-effective
+        values from the calculation), 'std' (numpy.ndarray of the k-effective
+        standard deviations from the calculation), 'coe' (numpy.ndarray of the
+        ratio of the mean k-effective values from the calculation to the
+        experimental values), 'unc' (numpy.ndarray of the benchmark model
         uncertainties), and 'label' (list of abbreviated benchmark names).
 
     """
@@ -59,8 +60,8 @@ def read_results(filename):
     n = text.shape[1]
     name = text[0]
     case = text[1]
-    data = {'coe': text[2].astype(float), 'std': text[3].astype(float)*1.96,
-            'unc': np.empty(n), 'label': []}
+    data = {'mean': text[2].astype(float), 'std': text[3].astype(float)*1.96,
+            'coe': np.empty(n), 'unc': np.empty(n), 'label': []}
 
     for i in range(n):
         # Get the abbreviated benchmark names for x-axis tick labels
@@ -72,7 +73,7 @@ def read_results(filename):
         # Calculate C/E and get the benchmark model uncertainties
         benchmark = f'{name[i]}/{case[i]}' if case[i] else f'{name[i]}'
         if benchmark in model_keff:
-            data['coe'][i] /= model_keff[benchmark][0]
+            data['coe'][i] = data['mean'][i]/model_keff[benchmark][0]
             data['unc'][i] = model_keff[benchmark][1]
     return data
 
@@ -100,7 +101,13 @@ def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
     output_format : str
         The output file format, e.g. 'png', 'pdf', ... Default is 'png'.
     save : bool
-        If True, the figure will be saved. If False, it will be displayed.
+        If True, the figure will be saved. If False, a matplotlib.axes.Axes
+        object will be returned.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        A matplotlib.axes.Axes object, or None if 'save' is True.
 
     """
     # Get the data from the results files
@@ -110,6 +117,8 @@ def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
     # x values for plot (benchmark number)
     n = len(r1['coe'])
     x = np.arange(1, n+1)
+
+    fig, ax = plt.subplots(figsize=(17, 6))
 
     if plot_type == 'diff':
         # Check that two results files are specified
@@ -123,63 +132,58 @@ def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
         r2 = read_results(f2)
 
         # Check that number of benchmarks in both files is the same
-        if len(r2['coe']) != n:
+        if len(r2['mean']) != n:
             msg = f'{f1} and {f2} have different number of benchmarks'
             raise ValueError(msg)
 
         # Plot mean difference
-        mu = sum(r2['coe'] - r1['coe'])/n
-        label = f'Average C/E difference = {mu:.4f}'
-        plt.plot([0,n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
+        mu = sum(r2['mean'] - r1['mean'])/n
+        label = f'Average difference = {mu:.4f}'
+        ax.plot([0,n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
 
         # Plot C/E difference
         kwargs = {'color': '#3F5D7D', 'mec': 'black', 'mew': 0.15}
-        err = abs(r2['coe']/r1['coe']) * np.sqrt((r2['std']/r2['coe'])**2 +
-                                                 (r1['std']/r2['coe'])**2)
-        plt.errorbar(x, r2['coe'] - r1['coe'], yerr=err, fmt='o', **kwargs)
+        err = abs(r2['mean']/r1['mean']) * np.sqrt((r2['std']/r2['mean'])**2 +
+                                                   (r1['std']/r2['mean'])**2)
+        ax.errorbar(x, r2['mean'] - r1['mean'], yerr=err, fmt='o', **kwargs)
 
         # Define axes labels and title
         xlabel = 'Benchmark case'
-        ylabel = r'$k_{\mathrm{eff}}$ C/E difference'
-        f1_time = time.asctime(time.strptime(f1.stem, "%Y-%m-%d-%H%M%S"))
-        f2_time = time.asctime(time.strptime(f2.stem, "%Y-%m-%d-%H%M%S"))
-        title = f'{f2_time} - {f1_time}'
+        ylabel = r'$k_{\mathrm{eff}1} - k_{\mathrm{eff}2}$'
+        title = r'$k_{\mathrm{eff}}$ Difference'
 
     else:
         # Show shaded region of benchmark model uncertainties
         vert = np.block([[x, x[::-1]], [1 + r1['unc'], 1 - r1['unc'][::-1]]]).T
         poly = Polygon(vert, facecolor='gray', edgecolor=None, alpha=0.2)
-        ax = plt.gca()
         ax.add_patch(poly)
 
         # Plot mean C/E
         mu = np.mean(r1['coe'])
         label = f'Average C/E = {mu:.4f}'
-        plt.plot([0, n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
+        ax.plot([0, n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
 
         # Plot k-effective C/E
         kwargs = {'color': '#3F5D7D', 'mec': 'black', 'mew': 0.15}
-        plt.errorbar(x, r1['coe'], yerr=r1['std'], fmt='o', **kwargs)
+        ax.errorbar(x, r1['coe'], yerr=r1['std'], fmt='o', **kwargs)
 
         # Define axes labels and title
         xlabel = 'Benchmark case'
         ylabel = r'$k_{\mathrm{eff}}$ C/E'
-        title = time.asctime(time.strptime(f1.stem, "%Y-%m-%d-%H%M%S"))
+        title = r'$k_{\mathrm{eff}}$ C/E'
 
     # Configure plot
-    ax = plt.gca()
     ax.set_axisbelow(True)
-    plt.setp(ax.get_xticklabels(), fontsize=10)
-    plt.setp(ax.get_yticklabels(), fontsize=14)
-    plt.xlim((0, n+1))
-    plt.xticks(range(1, n+1), r1['label'], rotation='vertical')
-    plt.subplots_adjust(bottom=0.15)
-    plt.gcf().set_size_inches(17, 6)
-    plt.grid(True, which='both', color='lightgray', ls='-', alpha=0.7)
-    plt.xlabel(xlabel, fontsize=18)
-    plt.ylabel(ylabel, fontsize=18)
-    plt.title(title, multialignment='left')
-    lgd = plt.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), numpoints=1)
+    ax.set_xlim((0, n+1))
+    ax.set_xticks(range(1, n+1))
+    ax.set_xticklabels(r1['label'], rotation='vertical')
+    ax.tick_params(axis='x', which='major', labelsize=10)
+    ax.tick_params(axis='y', which='major', labelsize=14)
+    ax.set_xlabel(xlabel, fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_title(title, multialignment='left', fontsize=18)
+    ax.grid(True, which='both', color='lightgray', ls='-', alpha=0.7)
+    lgd = ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), numpoints=1)
 
     # Save or display plot
     if save:
@@ -191,7 +195,6 @@ def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
                 output_name += '_keff'
         outfile = f1.parent / f'{output_name}.{output_format}'
         plt.savefig(outfile, bbox_inches='tight')
+        plt.close()
     else:
-        plt.show()
-
-    plt.close()
+        return ax

@@ -36,9 +36,9 @@ def main():
     parser.add_argument('-t', '--threshold', type=float, default=0.0001,
                         help='Value of the standard deviation trigger on '
                         'eigenvalue.')
-    parser.add_argument('-o', '--output_name', type=str,
+    parser.add_argument('-o', '--output-name', type=str,
                         help='Base filename for plot.')
-    parser.add_argument('-f', '--output_format', type=str, default='png',
+    parser.add_argument('-f', '--output-format', type=str, default='png',
                         help='File format for plot.')
     args = parser.parse_args()
 
@@ -50,7 +50,7 @@ def main():
     executable = 'mcnp6' if args.code == 'mcnp' else 'openmc'
     if not shutil.which(executable, os.X_OK):
         msg = f'Unable to locate executable {executable} in path.'
-        raise ValueError(msg)
+        raise IOError(msg)
 
     # Create directory and set filename for results
     os.makedirs('results', exist_ok=True)
@@ -64,7 +64,7 @@ def main():
     # Get the list of benchmarks to run
     if not args.benchmarks.is_file():
         msg = f'Unable to locate benchmark list {args.benchmarks}.'
-        raise ValueError(msg)
+        raise IOError(msg)
     with open(args.benchmarks) as f:
         benchmarks = f.read().split()
 
