@@ -262,14 +262,14 @@ class NeutronPhysicsModel:
         # Settings
         settings = openmc.Settings()
         if self._temperature is not None:
-            settings.temperature = {'default': self._temperature}
+            settings.temperature = {'default': self._temperature, 'tolerance': 1000.0}
         settings.source = source
         settings.particles = self.particles // self._batches
         settings.run_mode = 'fixed source'
         settings.batches = self._batches
         settings.create_fission_neutrons = False
         settings.export_to_xml(self.openmc_dir / 'settings.xml')
- 
+
         # Define tallies
         energy_bins = np.logspace(np.log10(self._min_energy),
                                   np.log10(1.0001*self.energy), self._bins+1)
@@ -348,7 +348,7 @@ class NeutronPhysicsModel:
             xsdata = (self.other_dir / 'xsdata').resolve()
             lines.append(f'set acelib "{xsdata}"')
             lines.append('')
- 
+
         # Create the cell cards: material 1 inside sphere, void outside
         lines.append('% --- Cell cards ---')
         lines.append('cell 1 0 m1 -1')
@@ -407,7 +407,7 @@ class NeutronPhysicsModel:
 
     def _plot(self):
         """Extract and plot the results
- 
+
         """
         # Read results
         path = self.openmc_dir / f'statepoint.{self._batches}.h5'
@@ -430,33 +430,33 @@ class NeutronPhysicsModel:
         err = np.zeros_like(y2)
         idx = np.where(y2 > 0)
         err[idx] = (y1[idx] - y2[idx])/y2[idx]
- 
+
         # Set up the figure
         fig = plt.figure(1, facecolor='w', figsize=(8,8))
         ax1 = fig.add_subplot(111)
- 
+
         # Create a second y-axis that shares the same x-axis, keeping the first
         # axis in front
         ax2 = ax1.twinx()
         ax1.set_zorder(ax2.get_zorder() + 1)
         ax1.patch.set_visible(False)
- 
+
         # Plot the spectra
         label = 'Serpent' if self.code == 'serpent' else 'MCNP'
         ax1.loglog(x2, y2, 'r', linewidth=1, label=label)
         ax1.loglog(x1, y1, 'b', linewidth=1, label='OpenMC', linestyle='--')
- 
+
         # Plot the relative error and uncertainties
         ax2.semilogx(x2, err, color=(0.2, 0.8, 0.0), linewidth=1)
         ax2.semilogx(x2, 2*sd, color='k', linestyle='--', linewidth=1)
         ax2.semilogx(x2, -2*sd, color='k', linestyle='--', linewidth=1)
- 
+
         # Set grid and tick marks
         ax1.tick_params(axis='both', which='both', direction='in', length=10)
         ax1.grid(b=False, axis='both', which='both')
         ax2.tick_params(axis='y', which='both', right=False)
         ax2.grid(b=True, which='both', axis='both', alpha=0.5, linestyle='--')
- 
+
         # Set axes labels and limits
         ax1.set_xlim([self._min_energy, self.energy])
         ax1.set_xlabel('Energy (eV)', size=12)
@@ -470,7 +470,7 @@ class NeutronPhysicsModel:
             title += f' + {thermal_name}'
         title += f', {self.energy:.1e} eV Source'
         plt.title(title)
- 
+
         # Save plot
         os.makedirs('plots', exist_ok=True)
         if self.name is not None:
@@ -487,7 +487,7 @@ class NeutronPhysicsModel:
 
     def run(self):
         """Generate inputs, run problem, and plot results.
- 
+
         """
         # Create HDF5 cross section library and Serpent XSDATA file
         if self.xsdir is not None:
