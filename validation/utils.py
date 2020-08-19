@@ -88,7 +88,7 @@ class XSDIR:
             Tables from the XSDIR file to write to the XSDATA file. If None,
             all of the entries are written. If str or iterable, only the
             entries matching the table names are written.
- 
+
         """
         if table_names is None:
             table_names = self.directory.keys()
@@ -197,7 +197,13 @@ class XSDIR:
 
         tables = []
         for name in table_names:
-            table = self.directory.get(name)
+            zaid, suffix = name.split('.')
+
+            # Replace ACE 2.0 suffixes with MCNP-compatible
+            suffix_xsdir = mcnp_suffix(suffix)
+            name_xsdir = f'{zaid}.{suffix_xsdir}'
+
+            table = self.directory.get(name_xsdir)
             if table is None:
                 msg = f'Could not find table {name} in {self.filename}.'
                 raise ValueError(msg)
@@ -217,10 +223,10 @@ class XSDIR:
             if not ace_path.is_file():
                 raise ValueError(f'Could not find ACE file {ace_path}.')
 
-            zaid, suffix = name.split('.')
-            if re.match('(8[0-6]c)|(71[0-6]nc)', suffix):
-                nuclide, _, _, _, _ = openmc.data.get_metadata(int(zaid))
-                name = szax(nuclide, suffix)
+            # Get proper suffix and name for conversion. If an ACE 2.0 style
+            # suffix (e.g. 710nc) is available, that needs to be used
+            suffix = nc_suffix(suffix)
+            name = f'{zaid}.{suffix}'
 
             # Get the ACE table
             print(f'Converting table {name} from library {ace_path}...')
@@ -372,11 +378,60 @@ def szax(nuclide, suffix):
     elif A == 242 and m == 1:
         m = 0
 
-    if re.match('(7[0-4]c)|(8[0-6]c)', suffix):
-        suffix = f'71{suffix[1]}nc'
-
     return f'{1000000*m + 1000*Z + A}.{suffix}'
 
+
+def mcnp_suffix(suffix):
+    """Return MCNP-compatible suffix
+
+    MCNP does not yet accept 2.0 style suffixes, e.g., 710nc. Therefore, these
+    need to be replaced by the shorter version that appears in the xsdir file.
+
+    Parameters
+    ----------
+    suffix : str
+        Cross section suffix
+
+    Returns
+    -------
+    str
+        Suffix compatible with MCNP
+
+    """
+
+    if re.match('71[0-6]nc', suffix):
+        return f'8{suffix[2]}c'
+    elif re.match('72[0-6]nc', suffix):
+        return f'9{suffix[2]}c'
+    elif re.match('80[0-6]nc', suffix):
+        return f'0{suffix[2]}c'
+    else:
+        return suffix
+
+
+def nc_suffix(suffix):
+    """Return ACE 2.0 style suffix if available
+
+    Parameters
+    ----------
+    suffix : str
+        Cross section suffix
+
+    Returns
+    -------
+    str
+        If an ACE 2.0 style suffix is known, return it
+
+    """
+
+    if re.match('8[0-6]c', suffix):
+        return f'71{suffix[1]}nc'
+    elif re.match('9[0-6]c', suffix):
+        return f'72{suffix[1]}nc'
+    elif re.match('0[0-6]c', suffix):
+        return f'80{suffix[1]}nc'
+    else:
+        return suffix
 
 def create_library(xsdir, table_names, hdf5_dir, xsdata_dir=None):
     """Convert the ACE data from the MCNP or Serpent distribution into an

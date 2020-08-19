@@ -13,7 +13,7 @@ import numpy as np
 
 import openmc
 from openmc.data import K_BOLTZMANN
-from .utils import zaid, szax, create_library, read_results
+from .utils import zaid, szax, create_library, read_results, mcnp_suffix
 
 
 def main():
@@ -208,10 +208,6 @@ class NeutronPhysicsModel:
 
     @suffix.setter
     def suffix(self, suffix):
-        match = '(7[0-4]c)|(8[0-6]c)|(71[0-6]nc)|[0][3,6,9]c|[1][2,5,8]c'
-        if not re.match(match, suffix):
-            msg = f'Unsupported cross section suffix {suffix}.'
-            raise ValueError(msg)
         self._suffix = suffix
 
     @xsdir.setter
@@ -307,8 +303,8 @@ class NeutronPhysicsModel:
         lines.append('c --- Data cards ---')
 
         # Materials
-        if re.match('(71[0-6]nc)', self.suffix):
-            name = szax(self.nuclide, self.suffix)
+        if self.suffix.endswith('nc'):
+            name = szax(self.nuclide, mcnp_suffix(self.suffix))
         else:
             name = zaid(self.nuclide, self.suffix)
         lines.append(f'm1 {name} 1.0')
