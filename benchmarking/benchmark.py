@@ -71,7 +71,9 @@ def main():
         benchmarks = [Path(line) for line in f.read().split()]
 
     # Prepare and run benchmarks
-    for benchmark in benchmarks:
+    for i, benchmark in enumerate(benchmarks):
+        print(f"{i + 1} {benchmark} ", end="", flush=True)
+
         path = 'benchmarks' / benchmark
 
         if args.code == 'openmc':
@@ -99,19 +101,28 @@ def main():
             materials.export_to_xml(path / 'materials.xml')
 
             # Run benchmark
-            result = subprocess.run(
+            proc = subprocess.run(
                 mpi_args + ["openmc"],
                 cwd=path,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                universal_newlines=True,
             )
 
+            # Determine last statepoint
+            t_last = 0
+            last_statepoint = None
+            for sp in path.glob('statepoint.*.h5'):
+                mtime = sp.stat().st_mtime
+                if mtime >= t_last:
+                    t_last = mtime
+                    last_statepoint = sp
+
             # Read k-effective mean and standard deviation from statepoint
-            filename = list(path.glob('statepoint.*.h5'))[0]
-            with openmc.StatePoint(filename) as sp:
-                mean = sp.k_combined.nominal_value
-                stdev = sp.k_combined.std_dev
+            if last_statepoint is not None:
+                with openmc.StatePoint(last_statepoint) as sp:
+                    mean = sp.k_combined.nominal_value
+                    stdev = sp.k_combined.std_dev
 
         elif args.code == 'mcnp':
             # Read input file
@@ -145,7 +156,7 @@ def main():
 
             # Run benchmark and capture and print output
             arg_list = mpi_args + [executable, 'inp=input']
-            result = subprocess.run(
+            proc = subprocess.run(
                 arg_list,
                 cwd=path,
                 stdout=subprocess.PIPE,
@@ -164,7 +175,14 @@ def main():
 
         # Write output to file
         with open(path / f"output_{timestamp}", "w") as fh:
-            fh.write(result.stdout)
+            fh.write(proc.stdout)
+
+        if proc.returncode != 0:
+            print()
+            continue
+
+        # Display k-effective
+        print(f"{mean:.5f} ± {stdev:.5f}")
 
         # Write results
         words = str(benchmark).split('/')
