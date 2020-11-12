@@ -2,7 +2,7 @@
 
 import argparse
 import os
-import pathlib
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -14,8 +14,8 @@ from .plot import plot
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-l', '--benchmarks', type=pathlib.Path,
-                        default=pathlib.Path('benchmarks/lists/pst-short'),
+    parser.add_argument('-l', '--benchmarks', type=Path,
+                        default=Path('benchmarks/lists/pst-short'),
                         help='List of benchmarks to run.')
     parser.add_argument('-c', '--code', choices=['openmc', 'mcnp'],
                         default='openmc',
@@ -40,24 +40,26 @@ def main():
                         help='Base filename for plot.')
     parser.add_argument('-f', '--output-format', type=str, default='png',
                         help='File format for plot.')
+    parser.add_argument('--mpi_args', default="",
+                        help="MPI execute command and any additional MPI arguments")
     args = parser.parse_args()
 
     # Create timestamp
-    current_time = time.localtime()
-    timestamp = time.strftime("%Y-%m-%d-%H%M%S", current_time)
+    timestamp = time.strftime("%Y-%m-%d-%H%M%S")
 
     # Check that executable exists
     executable = 'mcnp6' if args.code == 'mcnp' else 'openmc'
     if not shutil.which(executable, os.X_OK):
         msg = f'Unable to locate executable {executable} in path.'
         raise IOError(msg)
+    mpi_args = args.mpi_args.split()
 
     # Create directory and set filename for results
     os.makedirs('results', exist_ok=True)
     outfile = f'results/{timestamp}.csv'
 
     # Get a copy of the benchmarks repository
-    if not pathlib.Path('benchmarks').is_dir():
+    if not Path('benchmarks').is_dir():
         repo = 'https://github.com/mit-crpg/benchmarks.git'
         subprocess.run(['git', 'clone', repo], check=True)
 
@@ -66,11 +68,11 @@ def main():
         msg = f'Unable to locate benchmark list {args.benchmarks}.'
         raise IOError(msg)
     with open(args.benchmarks) as f:
-        benchmarks = f.read().split()
+        benchmarks = [Path(line) for line in f.read().split()]
 
     # Prepare and run benchmarks
     for benchmark in benchmarks:
-        path = pathlib.Path('benchmarks') / benchmark
+        path = 'benchmarks' / benchmark
 
         if args.code == 'openmc':
             openmc.reset_auto_ids()
@@ -97,7 +99,13 @@ def main():
             materials.export_to_xml(path / 'materials.xml')
 
             # Run benchmark
-            openmc.run(cwd=path)
+            result = subprocess.run(
+                mpi_args + ["openmc"],
+                cwd=path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
 
             # Read k-effective mean and standard deviation from statepoint
             filename = list(path.glob('statepoint.*.h5'))[0]
@@ -136,16 +144,14 @@ def main():
                     pass
 
             # Run benchmark and capture and print output
-            arg_list = [executable, 'inp=input']
-            p = subprocess.Popen(
-                args=arg_list, cwd=path, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, universal_newlines=True
+            arg_list = mpi_args + [executable, 'inp=input']
+            result = subprocess.run(
+                arg_list,
+                cwd=path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
             )
-            while True:
-                line = p.stdout.readline()
-                if not line and p.poll() is not None:
-                    break
-                print(line, end='')
 
             # Read k-effective mean and standard deviation from output
             with open(path / 'outp', 'r') as f:
@@ -156,8 +162,12 @@ def main():
                 mean = float(words[2])
                 stdev = float(words[3])
 
+        # Write output to file
+        with open(path / f"output_{timestamp}", "w") as fh:
+            fh.write(result.stdout)
+
         # Write results
-        words = benchmark.split('/')
+        words = str(benchmark).split('/')
         name = words[1]
         case = words[3] if len(words) > 3 else ''
         line = '{}, {}, {}, {}'.format(name, case, mean, stdev)
