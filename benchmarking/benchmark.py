@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import argparse
 import os
 from pathlib import Path
@@ -66,6 +64,10 @@ def main():
     with open(args.benchmarks) as f:
         benchmarks = [Path(line) for line in f.read().split()]
 
+    # Set cross sections
+    if args.cross_sections is not None:
+        os.environ["OPENMC_CROSS_SECTIONS"] = args.cross_sections
+
     # Prepare and run benchmarks
     for i, benchmark in enumerate(benchmarks):
         print(f"{i + 1} {benchmark} ", end="", flush=True)
@@ -95,11 +97,6 @@ def main():
             genmat_script = path / "generate_materials.py"
             if genmat_script.is_file():
                 subprocess.run(["python", "generate_materials.py"], cwd=path)
-
-            # Set path to cross sections XML
-            materials = openmc.Materials.from_xml(path / 'materials.xml')
-            materials.cross_sections = args.cross_sections
-            materials.export_to_xml(path / 'materials.xml')
 
             # Run benchmark
             proc = subprocess.run(
