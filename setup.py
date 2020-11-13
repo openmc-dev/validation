@@ -16,7 +16,8 @@ setup(
             'openmc-validate-neutron-physics=validation.neutron_physics:main',
             'openmc-validate-photon-physics=validation.photon_physics:main',
             'openmc-validate-photon-production=validation.photon_production:main',
-            'openmc-run-benchmarks=benchmarking.benchmark:main'
+            'openmc-run-benchmarks=benchmarking.benchmark:main',
+            'openmc-plot-benchmarks=benchmarking.plot:main',
         ]
     }
 )

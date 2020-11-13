@@ -1,108 +1,37 @@
-#!/usr/bin/env python3
-
-import csv
+from argparse import ArgumentParser
+from math import sqrt
 import os
-import pathlib
-import time
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 import numpy as np
 
-
-def read_uncertainties():
-    """Read the benchmark model k-effective means and uncertainties.
-
-    Returns
-    -------
-    dict of str to tuple of float
-        Dictionary whose keys are the benchmark model names and values are
-        the k-effective mean and uncertainty
-
-    """
-    cwd = pathlib.Path(__file__).parent
-    model_keff = {}
-    with open(cwd / 'uncertainties.csv', 'r') as csvfile:
-        reader = csv.reader(csvfile, skipinitialspace=True)
-        for benchmark, case, mean, uncertainty in reader:
-            if case:
-                name = '{}/{}'.format(benchmark, case)
-            else:
-                name = benchmark
-            model_keff[name] = (float(mean), float(uncertainty))
-    return model_keff
+from .results import get_result_dataframe, get_icsbep_dataframe, abbreviated_name
 
 
-def read_results(filename):
-    """Read the data from a file produced by the benchmarking script.
-
-    Parameters
-    ----------
-    filename : str
-        Name of a results file produced by the benchmarking script.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys 'mean' (numpy.ndarray of the mean k-effective
-        values from the calculation), 'std' (numpy.ndarray of the k-effective
-        standard deviations from the calculation), 'coe' (numpy.ndarray of the
-        ratio of the mean k-effective values from the calculation to the
-        experimental values), 'unc' (numpy.ndarray of the benchmark model
-        uncertainties), and 'label' (list of abbreviated benchmark names).
-
-    """
-    # Get the benchmark model k-effective means and uncertainties
-    model_keff = read_uncertainties()
-
-    # Read the calculation results
-    text = np.loadtxt(filename, dtype=str, delimiter=', ', unpack=True)
-    n = text.shape[1]
-    name = text[0]
-    case = text[1]
-    data = {'mean': text[2].astype(float), 'std': text[3].astype(float)*1.96,
-            'coe': np.empty(n), 'unc': np.empty(n), 'label': []}
-
-    for i in range(n):
-        # Get the abbreviated benchmark names for x-axis tick labels
-        volume, form, spectrum, number = name[i].split('-')
-        abbreviation = volume[0] + form[0] + spectrum[0]
-        short_name = f'{abbreviation}{number}{case[i].replace("case", "")}'
-        data['label'].append(short_name)
-
-        # Calculate C/E and get the benchmark model uncertainties
-        benchmark = f'{name[i]}/{case[i]}' if case[i] else f'{name[i]}'
-        if benchmark in model_keff:
-            data['coe'][i] = data['mean'][i]/model_keff[benchmark][0]
-            data['unc'][i] = model_keff[benchmark][1]
-    return data
-
-
-def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
-         save=True):
+def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
+         show_uncertainties=True):
     """For all benchmark cases, produce a plot comparing the k-effective mean
     from the calculation to the experimental value along with uncertainties.
 
     Parameters
     ----------
-    f1 : str
+    files : iterable of str
         Name of a results file produced by the benchmarking script.
-    f2 : str
-        Name of a results file produced by the benchmarking script. This file
-        will only be used for a 'diff' plot; for a 'keff' plot, it will be
-        ignored.
+    labels: iterable of str
+        Labels for each dataset to use in legend
     plot_type : {'keff', 'diff'}
         Type of plot to produce. A 'keff' plot shows the ratio of the
         calculation k-effective mean to the experimental value (C/E). A 'diff'
         plot shows the difference between C/E values for different
         calculations. Default is 'keff'.
-    output_name : str
-        The output file name.
-    output_format : str
-        The output file format, e.g. 'png', 'pdf', ... Default is 'png'.
-    save : bool
-        If True, the figure will be saved. If False, a matplotlib.axes.Axes
-        object will be returned.
+    match : str
+        Pattern to match benchmark names to
+    show_shaded : bool
+        Whether to show shaded region indicating uncertainty of mean C/E
+    show_uncertainties : bool
+        Whether to show uncertainties for individual cases
 
     Returns
     -------
@@ -110,91 +39,124 @@ def plot(f1, f2=None, plot_type='keff', output_name=None, output_format='png',
         A matplotlib.axes.Axes object, or None if 'save' is True.
 
     """
-    # Get the data from the results files
-    f1 = pathlib.Path(f1)
-    r1 = read_results(f1)
+    if labels is None:
+        labels = [Path(f).name for f in files]
 
-    # x values for plot (benchmark number)
-    n = len(r1['coe'])
-    x = np.arange(1, n+1)
+    # Read data from spreadsheets
+    dataframes = {}
+    for csvfile, label in zip(files, labels):
+        dataframes[label] = get_result_dataframe(csvfile).dropna()
+
+    # Get model keff and uncertainty from ICSBEP
+    icsbep = get_icsbep_dataframe()
+
+    # Determine common benchmarks
+    base = labels[0]
+    index = dataframes[base].index
+    for df in dataframes.values():
+        index = index.intersection(df.index)
+
+    # Applying matching as needed
+    if match is not None:
+        cond = index.map(lambda x: fnmatch(x, match))
+        index = index[cond]
+
+    # Setup x values (integers) and corresponding tick labels
+    n = index.size
+    x = np.arange(1, n + 1)
+    xticklabels = index.map(abbreviated_name)
 
     fig, ax = plt.subplots(figsize=(17, 6))
 
     if plot_type == 'diff':
         # Check that two results files are specified
-        if f2 is None:
-            msg = ('Unable to create a "diff" plot since only one filename '
-                   f'{f1} was provided.')
-            raise ValueError(msg)
+        if len(files) < 2:
+            raise ValueError('Must provide two or more files to create a "diff" plot')
 
-        # Get the data from the results file
-        f2 = pathlib.Path(f2)
-        r2 = read_results(f2)
+        kwargs = {'mec': 'black', 'mew': 0.15, 'fmt': 'o'}
 
-        # Check that number of benchmarks in both files is the same
-        if len(r2['mean']) != n:
-            msg = f'{f1} and {f2} have different number of benchmarks'
-            raise ValueError(msg)
+        keff0 = dataframes[base]['keff'].loc[index]
+        stdev0 = 1.96*dataframes[base]['stdev'].loc[index]
+        for i, label in enumerate(labels[1:]):
+            df = dataframes[label]
+            keff_i = df['keff'].loc[index]
+            stdev_i = 1.96*df['stdev'].loc[index]
 
-        # Plot mean difference
-        mu = sum(r2['mean'] - r1['mean'])/n
-        label = f'Average difference = {mu:.4f}'
-        ax.plot([0,n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
+            diff = keff_i - keff0
+            err = np.sqrt(stdev_i**2 + stdev0**2)
+            kwargs['label'] = labels[i + 1] + ' - ' + labels[0]
+            if show_uncertainties:
+                ax.errorbar(x, diff, yerr=err, color=f'C{i}', **kwargs)
+            else:
+                ax.plot(x, diff, color=f'C{i}', **kwargs)
 
-        # Plot C/E difference
-        kwargs = {'color': '#3F5D7D', 'mec': 'black', 'mew': 0.15}
-        err = abs(r2['mean']/r1['mean']) * np.sqrt((r2['std']/r2['mean'])**2 +
-                                                   (r1['std']/r2['mean'])**2)
-        ax.errorbar(x, r2['mean'] - r1['mean'], yerr=err, fmt='o', **kwargs)
+            mu = diff.mean()
+            if show_shaded:
+                sigma = diff.std() / sqrt(n)
+                verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
+                poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
+                ax.add_patch(poly)
+            else:
+                ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
 
-        # Define axes labels and title
-        xlabel = 'Benchmark case'
-        ylabel = r'$k_{\mathrm{eff}1} - k_{\mathrm{eff}2}$'
-        title = r'$k_{\mathrm{eff}}$ Difference'
+        # Define y-axis label
+        ylabel = r'$\Delta k_\mathrm{eff}$'
 
     else:
+        for i, (label, df) in enumerate(dataframes.items()):
+            # Calculate keff C/E and its standard deviation
+            coe = (df['keff'] / icsbep['keff']).loc[index]
+            stdev = 1.96 * df['stdev'].loc[index]
+
+            # Plot keff C/E
+            kwargs = {'color': f'C{i}', 'mec': 'black', 'mew': 0.15, 'label': label}
+            if show_uncertainties:
+                ax.errorbar(x, coe, yerr=stdev, fmt='o', **kwargs)
+            else:
+                ax.plot(x, coe, 'o', **kwargs)
+
+            # Plot mean C/E
+            mu = coe.mean()
+            sigma = coe.std() / sqrt(n)
+            if show_shaded:
+                verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
+                poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
+                ax.add_patch(poly)
+            else:
+                ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
+
         # Show shaded region of benchmark model uncertainties
-        vert = np.block([[x, x[::-1]], [1 + r1['unc'], 1 - r1['unc'][::-1]]]).T
+        unc = icsbep['stdev'].loc[index]
+        vert = np.block([[x, x[::-1]], [1 + unc, 1 - unc[::-1]]]).T
         poly = Polygon(vert, facecolor='gray', edgecolor=None, alpha=0.2)
         ax.add_patch(poly)
 
-        # Plot mean C/E
-        mu = np.mean(r1['coe'])
-        label = f'Average C/E = {mu:.4f}'
-        ax.plot([0, n+1], [mu, mu], '-', color='#3F5D7D', ls='--', label=label)
-
-        # Plot k-effective C/E
-        kwargs = {'color': '#3F5D7D', 'mec': 'black', 'mew': 0.15}
-        ax.errorbar(x, r1['coe'], yerr=r1['std'], fmt='o', **kwargs)
-
         # Define axes labels and title
-        xlabel = 'Benchmark case'
-        ylabel = r'$k_{\mathrm{eff}}$ C/E'
-        title = r'$k_{\mathrm{eff}}$ C/E'
+        ylabel = r'$k_\mathrm{eff}$ C/E'
 
     # Configure plot
     ax.set_axisbelow(True)
     ax.set_xlim((0, n+1))
-    ax.set_xticks(range(1, n+1))
-    ax.set_xticklabels(r1['label'], rotation='vertical')
+    ax.set_xticks(x)
+    ax.set_xticklabels(xticklabels, rotation='vertical')
     ax.tick_params(axis='x', which='major', labelsize=10)
     ax.tick_params(axis='y', which='major', labelsize=14)
-    ax.set_xlabel(xlabel, fontsize=18)
+    ax.set_xlabel('Benchmark case', fontsize=18)
     ax.set_ylabel(ylabel, fontsize=18)
-    ax.set_title(title, multialignment='left', fontsize=18)
     ax.grid(True, which='both', color='lightgray', ls='-', alpha=0.7)
-    lgd = ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), numpoints=1)
+    ax.legend(numpoints=1)
+    return ax
 
-    # Save or display plot
-    if save:
-        if output_name is None:
-            output_name = f1.stem
-            if plot_type == 'diff':
-                output_name += f'_{f2.stem}_diff'
-            else:
-                output_name += '_keff'
-        outfile = f1.parent / f'{output_name}.{output_format}'
-        plt.savefig(outfile, bbox_inches='tight')
-        plt.close()
-    else:
-        return ax
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument('files', nargs='+')
+    parser.add_argument('--labels')
+    parser.add_argument('--plot-type', choices=['keff', 'diff'], default='keff')
+    args = parser.parse_args()
+
+    if args.labels is not None:
+        args.labels = args.labels.split(',')
+
+    ax = plot(args.files, labels=args.labels, plot_type=args.plot_type)
+    plt.show()
