@@ -34,12 +34,7 @@ def main():
     parser.add_argument('-m', '--max-batches', type=int, default=10000,
                         help='Maximum number of batches.')
     parser.add_argument('-t', '--threshold', type=float, default=0.0001,
-                        help='Value of the standard deviation trigger on '
-                        'eigenvalue.')
-    parser.add_argument('-o', '--output-name', type=str,
-                        help='Base filename for plot.')
-    parser.add_argument('-f', '--output-format', type=str, default='png',
-                        help='File format for plot.')
+                        help='Value of the standard deviation trigger on eigenvalue.')
     parser.add_argument('--mpi_args', default="",
                         help="MPI execute command and any additional MPI arguments")
     args = parser.parse_args()
@@ -55,8 +50,9 @@ def main():
     mpi_args = args.mpi_args.split()
 
     # Create directory and set filename for results
-    os.makedirs('results', exist_ok=True)
-    outfile = f'results/{timestamp}.csv'
+    results_dir = Path('results')
+    results_dir.mkdir(exist_ok=True)
+    outfile = results_dir / f'{timestamp}.csv'
 
     # Get a copy of the benchmarks repository
     if not Path('benchmarks').is_dir():
@@ -183,21 +179,16 @@ def main():
             fh.write(proc.stdout)
 
         if proc.returncode != 0:
+            mean = stdev = ""
             print()
-            continue
-
-        # Display k-effective
-        print(f"{mean:.5f} ± {stdev:.5f}")
+        else:
+            # Display k-effective
+            print(f"{mean:.5f} ± {stdev:.5f}")
 
         # Write results
         words = str(benchmark).split('/')
         name = words[1]
-        case = words[3] if len(words) > 3 else ''
-        line = '{}, {}, {}, {}'.format(name, case, mean, stdev)
-        if benchmark != benchmarks[-1]:
-            line += '\n'
+        case = '/' + words[3] if len(words) > 3 else ''
+        line = f'{name}{case},{mean},{stdev}\n'
         with open(outfile, 'a') as f:
             f.write(line)
-
-    plot(outfile, output_name=args.output_name,
-         output_format=args.output_format)
