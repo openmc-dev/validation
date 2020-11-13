@@ -95,6 +95,11 @@ def main():
             settings.output = {'tallies': False}
             settings.export_to_xml(path)
 
+            # Re-generate materials if Python script is present
+            genmat_script = path / "generate_materials.py"
+            if genmat_script.is_file():
+                subprocess.run(["python", "generate_materials.py"], cwd=path)
+
             # Set path to cross sections XML
             materials = openmc.Materials.from_xml(path / 'materials.xml')
             materials.cross_sections = args.cross_sections
