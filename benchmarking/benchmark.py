@@ -33,7 +33,7 @@ def main():
                         help='Maximum number of batches.')
     parser.add_argument('-t', '--threshold', type=float, default=0.0001,
                         help='Value of the standard deviation trigger on eigenvalue.')
-    parser.add_argument('--mpi_args', default="",
+    parser.add_argument('--mpi-args', default="",
                         help="MPI execute command and any additional MPI arguments")
     args = parser.parse_args()
 
