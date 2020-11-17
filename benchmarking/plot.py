@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from fnmatch import fnmatch
 from math import sqrt
 import os
 from pathlib import Path
@@ -10,8 +11,8 @@ import numpy as np
 from .results import get_result_dataframe, get_icsbep_dataframe, abbreviated_name
 
 
-def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
-         show_uncertainties=True):
+def plot(files, labels=None, plot_type='keff', match=None, show_mean=True,
+         show_shaded=True, show_uncertainties=True):
     """For all benchmark cases, produce a plot comparing the k-effective mean
     from the calculation to the experimental value along with uncertainties.
 
@@ -28,15 +29,17 @@ def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
         calculations. Default is 'keff'.
     match : str
         Pattern to match benchmark names to
+    show_mean : bool
+        Whether to show bar/line indicating mean value
     show_shaded : bool
-        Whether to show shaded region indicating uncertainty of mean C/E
+        Whether to show shaded region indicating uncertainty of mean
     show_uncertainties : bool
         Whether to show uncertainties for individual cases
 
     Returns
     -------
     matplotlib.axes.Axes
-        A matplotlib.axes.Axes object, or None if 'save' is True.
+        A matplotlib.axes.Axes object
 
     """
     if labels is None:
@@ -90,14 +93,16 @@ def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
             else:
                 ax.plot(x, diff, color=f'C{i}', **kwargs)
 
-            mu = diff.mean()
-            if show_shaded:
-                sigma = diff.std() / sqrt(n)
-                verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
-                poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
-                ax.add_patch(poly)
-            else:
-                ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
+            # Plot mean difference
+            if show_mean:
+                mu = diff.mean()
+                if show_shaded:
+                    sigma = diff.std() / sqrt(n)
+                    verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
+                    poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
+                    ax.add_patch(poly)
+                else:
+                    ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
 
         # Define y-axis label
         ylabel = r'$\Delta k_\mathrm{eff}$'
@@ -116,14 +121,15 @@ def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
                 ax.plot(x, coe, 'o', **kwargs)
 
             # Plot mean C/E
-            mu = coe.mean()
-            sigma = coe.std() / sqrt(n)
-            if show_shaded:
-                verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
-                poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
-                ax.add_patch(poly)
-            else:
-                ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
+            if show_mean:
+                mu = coe.mean()
+                sigma = coe.std() / sqrt(n)
+                if show_shaded:
+                    verts = [(0, mu - sigma), (0, mu + sigma), (n+1, mu + sigma), (n+1, mu - sigma)]
+                    poly = Polygon(verts, facecolor=f'C{i}', alpha=0.5)
+                    ax.add_patch(poly)
+                else:
+                    ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
 
         # Show shaded region of benchmark model uncertainties
         unc = icsbep['stdev'].loc[index]
@@ -149,14 +155,40 @@ def plot(files, labels=None, plot_type='keff', match=None, show_shaded=True,
 
 
 def main():
+    """Produce plot of benchmark results"""
     parser = ArgumentParser()
-    parser.add_argument('files', nargs='+')
-    parser.add_argument('--labels')
+    parser.add_argument('files', nargs='+', help='Result CSV files')
+    parser.add_argument('--labels', help='Comma-separated list of dataset labels')
     parser.add_argument('--plot-type', choices=['keff', 'diff'], default='keff')
+    parser.add_argument('--match', help='Pattern to match benchmark names to')
+    parser.add_argument('--show-mean', action='store_true', help='Show line/bar indicating mean')
+    parser.add_argument('--no-show-mean', dest='show_mean', action='store_false',
+                        help='Do not show line/bar indicating mean')
+    parser.add_argument('--show-uncertainties', action='store_true',
+                        help='Show uncertainty bars on individual cases')
+    parser.add_argument('--no-show-uncertainties', dest='show_uncertainties', action='store_false',
+                        help='Do not show uncertainty bars on individual cases')
+    parser.add_argument('--show-shaded', action='store_true',
+                        help='Show shaded region indicating uncertainty of mean C/E')
+    parser.add_argument('--no-show-shaded', dest='show_shaded', action='store_false',
+                        help='Do not show shaded region indicating uncertainty of mean C/E')
+    parser.add_argument('-o', '--output', help='Filename to save to')
+    parser.set_defaults(show_uncertainties=True, show_shaded=True, show_mean=True)
     args = parser.parse_args()
 
     if args.labels is not None:
         args.labels = args.labels.split(',')
 
-    ax = plot(args.files, labels=args.labels, plot_type=args.plot_type)
-    plt.show()
+    ax = plot(
+        args.files,
+        labels=args.labels,
+        plot_type=args.plot_type,
+        match=args.match,
+        show_mean=args.show_mean,
+        show_shaded=args.show_shaded,
+        show_uncertainties=args.show_uncertainties,
+    )
+    if args.output is not None:
+        plt.savefig(args.output, bbox_inches='tight')
+    else:
+        plt.show()

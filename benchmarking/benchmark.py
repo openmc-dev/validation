@@ -7,7 +7,6 @@ import subprocess
 import time
 
 import openmc
-from .plot import plot
 
 
 def main():
@@ -122,7 +121,7 @@ def main():
                     mean = sp.k_combined.nominal_value
                     stdev = sp.k_combined.std_dev
 
-        elif args.code == 'mcnp':
+        else:
             # Read input file
             with open(path / 'input', 'r') as f:
                 lines = f.readlines()
