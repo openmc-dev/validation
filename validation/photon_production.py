@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 from pathlib import Path
 import re
@@ -293,35 +294,35 @@ class PhotonProductionModel:
             xs_path = (self.openmc_dir / 'cross_sections.xml').resolve()
             materials.cross_sections = str(xs_path)
         materials.export_to_xml(self.openmc_dir / 'materials.xml')
- 
+
         # Instantiate surfaces
         cyl = openmc.XCylinder(boundary_type='vacuum', r=1.e-6)
         px1 = openmc.XPlane(boundary_type='vacuum', x0=-1.)
         px2 = openmc.XPlane(boundary_type='transmission', x0=1.)
         px3 = openmc.XPlane(boundary_type='vacuum', x0=1.e9)
- 
+
         # Instantiate cells
         inner_cyl_left = openmc.Cell()
         inner_cyl_right = openmc.Cell()
         outer_cyl = openmc.Cell()
- 
+
         # Set cells regions and materials
         inner_cyl_left.region = -cyl & +px1 & -px2
         inner_cyl_right.region = -cyl & +px2 & -px3
         outer_cyl.region = ~(-cyl & +px1 & -px3)
         inner_cyl_right.fill = mat
- 
+
         # Create root universe and export to XML
         geometry = openmc.Geometry([inner_cyl_left, inner_cyl_right, outer_cyl])
         geometry.export_to_xml(self.openmc_dir / 'geometry.xml')
- 
+
         # Define source
         source = openmc.Source()
         source.space = openmc.stats.Point((0,0,0))
         source.angle = openmc.stats.Monodirectional()
         source.energy = openmc.stats.Discrete([self.energy], [1.])
         source.particle = 'neutron'
- 
+
         # Settings
         settings = openmc.Settings()
         if self._temperature is not None:
@@ -334,14 +335,14 @@ class PhotonProductionModel:
         settings.electron_treatment = self.electron_treatment
         settings.cutoff = {'energy_photon' : self._cutoff_energy}
         settings.export_to_xml(self.openmc_dir / 'settings.xml')
- 
+
         # Define filters
         surface_filter = openmc.SurfaceFilter(cyl)
         particle_filter = openmc.ParticleFilter('photon')
         energy_bins = np.logspace(np.log10(self._cutoff_energy),
                                   np.log10(self.max_energy), self._bins+1)
         energy_filter = openmc.EnergyFilter(energy_bins)
- 
+
         # Create tallies and export to XML
         tally = openmc.Tally(name='tally')
         tally.filters = [surface_filter, energy_filter, particle_filter]
@@ -424,7 +425,7 @@ class PhotonProductionModel:
         # Create the problem description
         lines = ['% Broomstick problem']
         lines.append('')
- 
+
         # Set the cross section library directory
         if self.xsdir is not None:
             xsdata = (self.other_dir / 'xsdata').resolve()
@@ -519,7 +520,7 @@ class PhotonProductionModel:
 
     def _plot(self):
         """Extract and plot the results
- 
+
         """
         # Read results
         path = self.openmc_dir / f'statepoint.{self._batches}.h5'
@@ -539,27 +540,27 @@ class PhotonProductionModel:
         err = np.zeros_like(y2)
         idx = np.where(y2 > 0)
         err[idx] = (y1[idx] - y2[idx])/y2[idx]
- 
+
         # Set up the figure
         fig = plt.figure(1, facecolor='w', figsize=(8,8))
         ax1 = fig.add_subplot(111)
- 
+
         # Create a second y-axis that shares the same x-axis, keeping the first
         # axis in front
         ax2 = ax1.twinx()
         ax1.set_zorder(ax2.get_zorder() + 1)
         ax1.patch.set_visible(False)
- 
+
         # Plot the spectra
         label = 'Serpent' if self.code == 'serpent' else 'MCNP'
         ax1.loglog(x2, y2, 'r', linewidth=1, label=label)
         ax1.loglog(x1, y1, 'b', linewidth=1, label='OpenMC', linestyle='--')
- 
+
         # Plot the relative error and uncertainties
         ax2.semilogx(x2, err, color=(0.2, 0.8, 0.0), linewidth=1)
         ax2.semilogx(x2, 2*sd, color='k', linestyle='--', linewidth=1)
         ax2.semilogx(x2, -2*sd, color='k', linestyle='--', linewidth=1)
- 
+
         # Set grid and tick marks
         ax1.tick_params(axis='both', which='both', direction='in', length=10)
         ax1.grid(b=False, axis='both', which='both')
@@ -578,7 +579,7 @@ class PhotonProductionModel:
         ax2.set_ylabel("Relative error", size=12)
         title = f'{self.material}, {energy:.1e} MeV Source'
         plt.title(title)
- 
+
         # Save plot
         os.makedirs('plots', exist_ok=True)
         if self.name is not None:
@@ -592,7 +593,7 @@ class PhotonProductionModel:
 
     def run(self):
         """Generate inputs, run problem, and plot results.
- 
+
         """
         # Create HDF5 cross section library and Serpent XSDATA file
         if self.xsdir is not None:
