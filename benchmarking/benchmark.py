@@ -118,8 +118,8 @@ def main():
             # Read k-effective mean and standard deviation from statepoint
             if last_statepoint is not None:
                 with openmc.StatePoint(last_statepoint) as sp:
-                    mean = sp.k_combined.nominal_value
-                    stdev = sp.k_combined.std_dev
+                    mean = sp.keff.nominal_value
+                    stdev = sp.keff.std_dev
 
         else:
             # Read input file
