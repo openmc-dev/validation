@@ -176,12 +176,14 @@ def main():
 
             # Read k-effective mean and standard deviation from output
             with open(path / 'outp', 'r') as f:
-                line = f.readline()
-                while not line.strip().startswith('col/abs/trk len'):
-                    line = f.readline()
-                words = line.split()
-                mean = float(words[2])
-                stdev = float(words[3])
+                for line in f:
+                    if line.strip().startswith('col/abs/trk len'):
+                        words = line.split()
+                        mean = float(words[2])
+                        stdev = float(words[3])
+                        break
+                else:
+                    mean = stdev = ""
 
         # Write output to file
         with open(path / f"output_{timestamp}", "w") as fh:
@@ -192,7 +194,7 @@ def main():
             print()
         else:
             # Display k-effective
-            print(f"{mean:.5f} ± {stdev:.5f}")
+            print(f"{mean:.5f} ± {stdev:.5f}" if mean else "")
 
         # Write results
         words = str(benchmark).split('/')
