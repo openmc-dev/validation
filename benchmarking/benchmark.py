@@ -20,8 +20,10 @@ def main():
     parser.add_argument('-x', '--cross-sections', type=str,
                         default=os.getenv('OPENMC_CROSS_SECTIONS'),
                         help='OpenMC cross sections XML file.')
-    parser.add_argument('-s', '--suffix', type=str, default='70c',
+    parser.add_argument('-s', '--suffix', type=str, default='80c',
                         help='MCNP cross section suffix')
+    parser.add_argument('--suffix-thermal', type=str, default='20t',
+                        help='MCNP thermal scattering suffix')
     parser.add_argument('-p', '--particles', type=int, default=10000,
                         help='Number of source particles.')
     parser.add_argument('-b', '--batches', type=int, default=150,
@@ -139,6 +141,10 @@ def main():
                 msg = f'Unsupported cross section suffix {args.suffix}.'
                 raise ValueError(msg)
             lines = [re.sub(match, args.suffix, x) for x in lines]
+
+            # Update thermal cross section suffix
+            match = r'\.[1-9][0-9]t'
+            lines = [re.sub(match, f'.{args.suffix_thermal}', x) for x in lines]
 
             # Write new input file
             with open(path / 'input', 'w') as f:
