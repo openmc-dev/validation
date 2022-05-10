@@ -32,6 +32,8 @@ def main():
                         help='Number of inactive batches.')
     parser.add_argument('-m', '--max-batches', type=int, default=10000,
                         help='Maximum number of batches.')
+    parser.add_argument('--threads', type=int, default=None,
+                        help='Number of OpenMP threads')
     parser.add_argument('-t', '--threshold', type=float, default=0.0001,
                         help='Value of the standard deviation trigger on eigenvalue.')
     parser.add_argument('--mpi-args', default="",
@@ -100,8 +102,11 @@ def main():
                 subprocess.run(["python", "generate_materials.py"], cwd=path)
 
             # Run benchmark
+            arg_list = mpi_args + ['openmc']
+            if args.threads is not None:
+                arg_list.extend(['-s', f'{args.threads}'])
             proc = subprocess.run(
-                mpi_args + ["openmc"],
+                arg_list,
                 cwd=path,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -159,6 +164,8 @@ def main():
 
             # Run benchmark and capture and print output
             arg_list = mpi_args + [executable, 'inp=input']
+            if args.threads is not None:
+                arg_list.extend(['tasks', f'{args.threads}'])
             proc = subprocess.run(
                 arg_list,
                 cwd=path,
