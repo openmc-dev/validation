@@ -85,8 +85,8 @@ def plot(files, labels=None, plot_type='keff', match=None, show_mean=True,
             keff_i = df['keff'].loc[index]
             stdev_i = 1.96*df['stdev'].loc[index]
 
-            diff = keff_i - keff0
-            err = np.sqrt(stdev_i**2 + stdev0**2)
+            diff = (keff_i - keff0) * 1e5
+            err = np.sqrt(stdev_i**2 + stdev0**2) * 1e5
             kwargs['label'] = labels[i + 1] + ' - ' + labels[0]
             if show_uncertainties:
                 ax.errorbar(x, diff, yerr=err, color=f'C{i}', **kwargs)
@@ -105,7 +105,7 @@ def plot(files, labels=None, plot_type='keff', match=None, show_mean=True,
                     ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
 
         # Define y-axis label
-        ylabel = r'$\Delta k_\mathrm{eff}$'
+        ylabel = r'$\Delta k_\mathrm{eff}$ [pcm]'
 
     else:
         for i, (label, df) in enumerate(dataframes.items()):
@@ -189,6 +189,6 @@ def main():
         show_uncertainties=args.show_uncertainties,
     )
     if args.output is not None:
-        plt.savefig(args.output, bbox_inches='tight')
+        plt.savefig(args.output, bbox_inches='tight', transparent=True)
     else:
         plt.show()
