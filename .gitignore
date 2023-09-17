@@ -27,3 +27,6 @@ benchmarks/
 
 # tex outputs
 *.tex
+
+# Jupyter Notebooks
+*.ipynb*
