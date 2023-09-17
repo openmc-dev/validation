@@ -28,10 +28,10 @@ def num_format(num):
     dec_pos= num.find('.') 
     if dec_pos != -1:
         if len(num[dec_pos+4:]) > 0:
-            tex_number = (num[:dec_pos+4] + '\\,' + num[dec_pos+4:dec_pos+7])
+            tex_num = (num[:dec_pos+4] + '\\,' + num[dec_pos+4:dec_pos+7])
     else:
         tex_num = num
-    return num
+    return tex_num
 
 def write_document(results, output, labels=None, match=None):
     """Write LaTeX document section with preamble, run info, and table entries 
@@ -54,12 +54,12 @@ def write_document(results, output, labels=None, match=None):
     None
 
     """
-    #write file
+    # Open and write file
     if output is None:
         output = 'report.tex'
     tex = open(output, 'w')
 
-    #define document preamble
+    # Define document preamble
     preamble = [
                 '\\documentclass[12pt]{article}', 
                 '\\usepackage[letterpaper, margin=1in]{geometry}',
@@ -73,76 +73,75 @@ def write_document(results, output, labels=None, match=None):
                 '\\setlength\\LTright{0.5in}'
                 ]
 
-    #define document start and end tex
-    doc_start = [
-                '\\begin{document}',
-                '\\part*{Benchmark Results}'
-                ]
+    # Define document start and end snippets
+    doc_start = ['\\begin{document}', '\\part*{Benchmark Results}']
     
     doc_end = ['\\end{document}']
 
     if labels is None:
         labels = [Path(f).name for f in results]
-
+    
     # Read data from spreadsheets
     dataframes = {}
     for csvfile, label in zip(results, labels):
-        dataframes[label] = get_result_dataframe(csvfile).dropna()
+        dataframes[label] = get_result_dataframe(csvfile).dropna() 
+        #fills dataframe with a key (label) and value (entire results df)
 
     # Get model keff and uncertainty from ICSBEP
     icsbep = get_icsbep_dataframe()
 
     # Determine common benchmarks
     base = labels[0]
-    index = dataframes[base].index
-    for df in dataframes.values():
-        index = index.intersection(df.index)
+    index = dataframes[base].index #get raw icsbep case names 
+
+    for df in dataframes.values(): #get the case/value column of the dataframes
+        index = index.intersection(df.index) #gives you all of the cases that need to be displayed
 
     # Applying matching as needed
     if match is not None:
         cond = index.map(lambda x: fnmatch(x, match))
         index = index[cond]
 
-    # entries are abbreviated_name, column 1
-    # experimental value, uncertainty, column 2,3
-    # calculated value, uncertainty, column 4, 5
-    # Setup x values (integers) and corresponding tick labels
-
-    n = index.size # <-- number of cases we need to issue
-
-    x = np.arange(1, n + 1)
-
+    # Define Table Entry
     table = [
             'Table \\ref{tab:data} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
             '\\begin{longtable}{lcccc}',
             '\\caption{\\label{tab:data} Criticality (nuclear data set info here) Benchmark Results}\\\\',
             '\\endfirsthead',
             '\\midrule',
-            '\\multicolumn{5}{r}{Continued on Next Page}\\',
+            '\\multicolumn{5}{r}{Continued on Next Page}\\\\',
             '\\midrule',
             '\\endfoot',
             '\\bottomrule',
             '\\endlastfoot',
             '\\toprule',
-            '& Exp. $k_{\\textrm{eff}}$&Exp. unc.& Calc. $k_{\textrm{eff}}$&Calc. unc.\\\\',
+            '& Exp. $k_{\\textrm{eff}}$&Exp. unc.& Calc. $k_{\\textrm{eff}}$&Calc. unc.\\\\',
             '\\midrule',
+            '% DATA',
+
             '\\end{longtable}'
             ]
 
-    for i, (label, df) in enumerate(dataframes.items()):
-        keff = df['keff'] #calculated
-        keff = num_format(keff)
-        stdev = df['stdev'] #calculated?
-        stdev = num_format(stdev)
-
-        icsbep_keff = icsbep['keff']
-        icsbep_stdev = icsbep['stdev']
-
-        table.insert(-1, (f'{index}&{icsbep_keff}&{icsbep_stdev}&{keff}&{stdev}\\\\'))
-
     
+    for case in index:
+        # Obtain and format calculated values
+        keff = df['keff'].loc[case]
+        keff = num_format(keff)
+        
+        stdev = df['stdev'].loc[case]
+        stdev = num_format(stdev)
+        
+        # Obtain and format experimental values
+        icsbep_keff = '{0:.4f}'.format(icsbep['keff'].loc[case])
+        icsbep_stdev = '{0:.4f}'.format(icsbep['stdev'].loc[case])
+        
+        # Insert data values into table as separate entries
+        table.insert(-1, (f'{case}&{icsbep_keff}&{icsbep_stdev}&{keff}&{stdev}\\\\'))
+
+    # Write all accumulated lines
     tex.writelines(line + '\n' for line in (preamble + doc_start + table + doc_end))
     tex.close()
+    return
 
 def main():
     """Produce LaTeX document with tabulated benchmark results"""
