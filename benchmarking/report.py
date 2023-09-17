@@ -74,6 +74,7 @@ def write_document(results, output, labels=None, match=None):
                 ]
 
     # Define document start and end snippets
+
     doc_start = ['\\begin{document}', '\\part*{Benchmark Results}']
     
     doc_end = ['\\end{document}']
@@ -95,18 +96,20 @@ def write_document(results, output, labels=None, match=None):
     index = dataframes[base].index #get raw icsbep case names 
 
     for df in dataframes.values(): #get the case/value column of the dataframes
-        index = index.intersection(df.index) #gives you all of the cases that need to be displayed
+        index = index.intersection(df.index) #gives all of the cases that need to be displayed
 
-    # Applying matching as needed
+    # Applying matching as needed (DEPRECATED)
     if match is not None:
         cond = index.map(lambda x: fnmatch(x, match))
         index = index[cond]
 
+    # Custom Table Caption
+    caption = '\\caption{\\label{tab:1} Criticality (' + labels[0] + ') Benchmark Results}\\\\'
     # Define Table Entry
     table = [
-            'Table \\ref{tab:data} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
+            'Table \\ref{tab:1} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
             '\\begin{longtable}{lcccc}',
-            '\\caption{\\label{tab:data} Criticality (nuclear data set info here) Benchmark Results}\\\\',
+            caption,
             '\\endfirsthead',
             '\\midrule',
             '\\multicolumn{5}{r}{Continued on Next Page}\\\\',
@@ -122,7 +125,6 @@ def write_document(results, output, labels=None, match=None):
             '\\end{longtable}'
             ]
 
-    
     for case in index:
         # Obtain and format calculated values
         keff = df['keff'].loc[case]
@@ -147,7 +149,7 @@ def main():
     """Produce LaTeX document with tabulated benchmark results"""
 
     parser = ArgumentParser()
-    parser.add_argument('results', nargs='+', help='Result CSV files')
+    parser.add_argument('results', nargs='+', help='Result CSV file')
     parser.add_argument('--labels', help='Comma-separated list of dataset labels')
     parser.add_argument('--match', help='Pattern to match benchmark names to')
     parser.add_argument('-o', '--output', help='Filename to save to')
@@ -166,5 +168,6 @@ def main():
         args.match
         )
     
+    # TBD
     if args.compile:
         pass
