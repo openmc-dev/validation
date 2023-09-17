@@ -10,16 +10,41 @@ import numpy as np
 
 from .results import get_result_dataframe, get_icsbep_dataframe, abbreviated_name
 
+def num_format(number):
+    """Format long decimal values with thin spaces.
+    
+    Parameters
+    ----------
+    number  : float
+        Float value to be formatted for LaTeX
+    
+    Returns
+    ----------
+    tex_number   : str
+        TeX-readable number with thin space
+    
+    """
+    number = round(number, 6)
+    number = str(number)
+    decimal_index = number.find('.') 
+    if decimal_index != -1:
+        if len(number[decimal_index+4:]) > 0:
+            tex_number = number[:decimal_index+4] + '\\,' +number[decimal_index+4:]
+        else:
+            tex_number = number
+    return tex_number
 
-
-def table(files, labels=None, match=None):
-    """Create a LaTeX table entry for all benchmark data comparing the calculated and
-    experimental values along with uncertainties.
+def document(results, file, labels=None, match=None):
+    """Fill LaTeX document section with run info and table entries for all 
+    benchmark data comparing the calculated and experimental values along 
+    with uncertainties.
 
     Parameters
     ----------
-    files : iterable of str
+    results : iterable of str
         Name of a results file produced by the benchmarking script.
+    file    : str
+        Python variable assigned to 
     labels: iterable of str
         Labels for each dataset to use in legend
     match : str
@@ -27,10 +52,16 @@ def table(files, labels=None, match=None):
 
     Returns
     -------
-    matplotlib.axes.Axes
-        A matplotlib.axes.Axes object
+    None
 
     """
+
+    #define document start and end
+    document_start = ['\\begin{document}',
+                '\\part*{Benchmark Results}']
+    
+    document_end = ['\\end{document}']
+
     if labels is None:
         labels = [Path(f).name for f in files]
 
@@ -58,13 +89,37 @@ def table(files, labels=None, match=None):
     # calculated value, uncertainty, column 4, 5
     
     # Setup x values (integers) and corresponding tick labels
-    n = index.size
+    n = index.size # <-- number of cases we need to issue
+
+
     x = np.arange(1, n + 1)
     xticklabels = index.map(abbreviated_name)
 
+    table = ['Table \\ref{tab:tomato} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
+                '\\begin{longtable}{lcccc}',
+                '\\caption{\\label{tab:tomato} Criticality (nuclear data set info here) Benchmark Results}\\\\',
+                '\\endfirsthead',
+                '\\midrule',
+                '\\multicolumn{5}{r}{Continued on Next Page}\\',
+                '\\midrule',
+                '\\endfoot',
+                '\\bottomrule',
+                '\\endlastfoot',
+                '\\toprule',
+                '& Exp. $k_{\\textrm{eff}}$&Exp. unc.& Calc. $k_{\textrm{eff}}$&Calc. unc.\\',
+                '\\midrule',
+                '\\end{longtable}']
+
     for i, (label, df) in enumerate(dataframes.items()):
+        keff = 
+        decimal_index = keff.find('.') 
+        if decimal_index != -1:
+            
+        stdev =
+
+        table.insert(-2, (f'{label}&{icsbep['keff']}&{icsbep['stdev']}&{keff}&{stdev}\\\\'))
         # Calculate keff C/E and its standard deviation
-        coe = (df['keff'] / icsbep['keff']).loc[index]
+        coe = (df['keff'] / icsbep['keff']).loc[index] # <-- how to get both keff values
         stdev = 1.96 * df['stdev'].loc[index]
 
         # Plot keff C/E
@@ -86,26 +141,18 @@ def table(files, labels=None, match=None):
                 ax.plot([-1, n], [mu, mu], '-', color=f'C{i}', lw=1.5)
 
         # Show shaded region of benchmark model uncertainties
-        unc = icsbep['stdev'].loc[index]
+        unc = icsbep['stdev'].loc[index] # <-- how to access iscbep stdev (will need to format)
         vert = np.block([[x, x[::-1]], [1 + unc, 1 - unc[::-1]]]).T
         poly = Polygon(vert, facecolor='gray', edgecolor=None, alpha=0.2)
         ax.add_patch(poly)
+    
 
-        # Define axes labels and title
-        ylabel = r'$k_\mathrm{eff}$ C/E'
+    
 
-    # Configure plot
-    ax.set_axisbelow(True)
-    ax.set_xlim((0, n+1))
-    ax.set_xticks(x)
-    ax.set_xticklabels(xticklabels, rotation='vertical')
-    ax.tick_params(axis='x', which='major', labelsize=10)
-    ax.tick_params(axis='y', which='major', labelsize=14)
-    ax.set_xlabel('Benchmark case', fontsize=18)
-    ax.set_ylabel(ylabel, fontsize=18)
-    ax.grid(True, which='both', color='lightgray', ls='-', alpha=0.7)
-    ax.legend(numpoints=1)
-    pass
+    
+    
+    
+    tex.writelines(s + '\n' for s in document)
 
 def main():
     """Produce LaTeX document with tabulated benchmark results"""
@@ -138,6 +185,10 @@ def main():
     
     if args.labels is not None:
         args.labels = args.labels.split(',')
+
+
+
+    
     
     # Testing purposes
     preamble = ['\\documentclass[12pt]{article}', 
@@ -155,32 +206,7 @@ def main():
     tex.writelines(s + '\n' for s in preamble)
         
 
-    document = ['\\begin{document}',
-                '\\part*{Benchmark Results}',
-                'Table \\ref{tab:tomato} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
-                '\\begin{longtable}{lcccc}',
-                '\\caption{\\label{tab:tomato} Criticality (nuclear data set info here) Benchmark Results}\\\\',
-                '\\endfirsthead',
-                '\\midrule',
-                '\\multicolumn{5}{r}{Continued on Next Page}\\',
-                '\\midrule',
-                '\\endfoot',
-                '\\bottomrule',
-                '\\endlastfoot',
-                '\\toprule',
-                '& Exp. $k_{\\textrm{eff}}$&Exp. unc.& Calc. $k_{\textrm{eff}}$&Calc. unc.\\',
-                '\\midrule',
-                'heu-met-fast-018-case-2&2.5&2.5&4.9 &5.3\\\\',
-                'heu-met-fast-019-case-2&2.5&2.5&4.3 &5.1\\\\',
-                'heu-met-fast-018-case-2&2.5&2.5&4.9 &5.3\\\\',
-                'heu-met-fast-019-case-2&2.5&2.5&4.3 &5.1\\\\',
-                'heu-met-fast-018-case-2&2.5&2.5&4.9 &5.3\\\\',
-                'heu-met-fast-019-case-2&2.5&2.5&4.3 &5.1\\\\',
-                'mix-comp-therm-002-case-pnl30&1.0010&0.0059&1.000\\,63 &0.000\\,333\\\\',
-                '\\end{longtable}',
-                '\\end{document}']
     
-    tex.writelines(s + '\n' for s in document)
 
 
 
