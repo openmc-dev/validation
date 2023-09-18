@@ -7,6 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 import numpy as np
+from openmc import __version__
 
 from .results import get_result_dataframe, get_icsbep_dataframe, abbreviated_name
 
@@ -34,9 +35,9 @@ def num_format(num):
     return tex_num
 
 def write_document(results, output, labels=None, match=None):
-    """Write LaTeX document section with preamble, run info, and table entries 
-    for all benchmark data comparing the calculated and experimental values 
-    along with uncertainties.
+    """Write LaTeX document section with preamble, run info, and table 
+    entries for all benchmark data comparing the calculated and 
+    experimental values along with uncertainties.
 
     Parameters
     ----------
@@ -103,11 +104,14 @@ def write_document(results, output, labels=None, match=None):
         cond = index.map(lambda x: fnmatch(x, match))
         index = index[cond]
 
-    # Custom Table Caption
-    caption = '\\caption{\\label{tab:1} Criticality (' + labels[0] + ') Benchmark Results}\\\\'
+    # Custom Table Description and Caption
+    desc = ('Table \\ref{tab:1} uses (nuclear data info here) and openmc ' 
+            f'version {__version__} to evaluate ICSBEP benchmarks.')
+    caption = ('\\caption{\\label{tab:1} Criticality (' + labels[0] + ') Benchmark Results}\\\\')
+
     # Define Table Entry
     table = [
-            'Table \\ref{tab:1} uses (nuclear data set info here) to evaluate ICSBEP benchmarks.',
+            desc,
             '\\begin{longtable}{lcccc}',
             caption,
             '\\endfirsthead',
