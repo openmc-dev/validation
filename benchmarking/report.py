@@ -34,19 +34,17 @@ def num_format(num):
         tex_num = num
     return tex_num
 
-def write_document(results, output, labels=None, match=None):
+def write_document(result, output, match=None):
     """Write LaTeX document section with preamble, run info, and table 
     entries for all benchmark data comparing the calculated and 
     experimental values along with uncertainties.
 
     Parameters
     ----------
-    results : iterable of str
-        Name of a results file produced by the benchmarking script.
+    result : str
+        Name of a result csv file produced by the benchmarking script.
     output    : str
         Name of the file to be written, ideally a .tex file
-    labels: iterable of str
-        Labels for each dataset to use in legend
     match : str
         Pattern to match benchmark names to
 
@@ -75,31 +73,28 @@ def write_document(results, output, labels=None, match=None):
                 ]
 
     # Define document start and end snippets
-
     doc_start = ['\\begin{document}', '\\part*{Benchmark Results}']
-    
     doc_end = ['\\end{document}']
 
-    if labels is None:
-        labels = [Path(f).name for f in results]
+    # Convert from list to string
+    result = result[0]
+
+    label = Path(result).name
     
-    # Read data from spreadsheets
+    # Read data from spreadsheet
     dataframes = {}
-    for csvfile, label in zip(results, labels):
-        dataframes[label] = get_result_dataframe(csvfile).dropna() 
-        #fills dataframe with a key (label) and value (entire results df)
+    dataframes[label] = get_result_dataframe(result).dropna()
 
     # Get model keff and uncertainty from ICSBEP
     icsbep = get_icsbep_dataframe()
 
-    # Determine common benchmarks
-    base = labels[0]
-    index = dataframes[base].index #get raw icsbep case names 
+    # Determine ICSBEP case names
+    base = label
+    index = dataframes[base].index
 
-    for df in dataframes.values(): #get the case/value column of the dataframes
-        index = index.intersection(df.index) #gives all of the cases that need to be displayed
+    df = dataframes[label]
 
-    # Applying matching as needed (DEPRECATED)
+    # Applying matching as needed
     if match is not None:
         cond = index.map(lambda x: fnmatch(x, match))
         index = index[cond]
@@ -107,7 +102,7 @@ def write_document(results, output, labels=None, match=None):
     # Custom Table Description and Caption
     desc = ('Table \\ref{tab:1} uses (nuclear data info here) and openmc ' 
             f'version {__version__} to evaluate ICSBEP benchmarks.')
-    caption = ('\\caption{\\label{tab:1} Criticality (' + labels[0] + ') Benchmark Results}\\\\')
+    caption = ('\\caption{\\label{tab:1} Criticality (' + label + ') Benchmark Results}\\\\')
 
     # Define Table Entry
     table = [
@@ -153,25 +148,14 @@ def main():
     """Produce LaTeX document with tabulated benchmark results"""
 
     parser = ArgumentParser()
-    parser.add_argument('results', nargs='+', help='Result CSV file')
-    parser.add_argument('--labels', help='Comma-separated list of dataset labels')
+    parser.add_argument('result', nargs='+', help='Result CSV file')
     parser.add_argument('--match', help='Pattern to match benchmark names to')
     parser.add_argument('-o', '--output', help='Filename to save to')
-    parser.add_argument('-c', '--compile', help='Compile resulting .tex to pdf')
-    parser.set_defaults(show_uncertainties=True, show_shaded=True, show_mean=True)
     args = parser.parse_args()
-    
-    if args.labels is not None:
-        args.labels = args.labels.split(',')
-
         
     write_document(
-        args.results,
+        args.result,
         args.output,
-        args.labels,
         args.match
         )
     
-    # TBD
-    if args.compile:
-        pass
