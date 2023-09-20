@@ -6,31 +6,6 @@ from openmc import __version__
 
 from .results import get_result_dataframe, get_icsbep_dataframe
 
-
-def num_format(num):
-    """Format long decimal values with thin spaces.
-
-    Parameters
-    ----------
-    num : float
-        Float value to be formatted for LaTeX
-
-    Returns
-    ----------
-    tex_num : str
-        TeX-readable num with thin space
-
-    """
-    num = f'{num:.9f}'
-    dec_pos = num.find('.')
-    if dec_pos != -1:
-        if len(num[dec_pos+4:]) > 0:
-            tex_num = (num[:dec_pos+4] + r'\,' + num[dec_pos+4:dec_pos+7])
-    else:
-        tex_num = num
-    return tex_num
-
-
 def write_document(result, output, match=None):
     """Write LaTeX document section with preamble, run info, and table
     entries for all benchmark data comparing the calculated and
@@ -55,6 +30,7 @@ def write_document(result, output, match=None):
         r'\usepackage{booktabs}',
         r'\usepackage{longtable}',
         r'\usepackage{fancyhdr}',
+        r'\usepackage{siunitx}',
         r'\setlength\LTcapwidth{5.55in}',
         r'\setlength\LTleft{0.5in}',
         r'\setlength\LTright{0.5in}'
@@ -108,16 +84,16 @@ def write_document(result, output, match=None):
         r'& Exp. $k_{\textrm{eff}}$&Exp. unc.& Calc. $k_{\textrm{eff}}$&Calc. unc.\\',
         r'\midrule',
         '% DATA',
-        '\\end{longtable}'
+        r'\end{longtable}'
     ]
 
     for case in index:
         # Obtain and format calculated values
-        keff = df['keff'].loc[case]
-        keff = num_format(keff)
+        keff = '{:.6f}'.format(df['keff'].loc[case])
+        keff = r'\num{' + keff + '}'
 
-        stdev = df['stdev'].loc[case]
-        stdev = num_format(stdev)
+        stdev = '{:.6f}'.format(df['stdev'].loc[case])
+        stdev = r'\num{' + stdev + '}'
 
         # Obtain and format experimental values
         icsbep_keff = '{:.4f}'.format(icsbep['keff'].loc[case])
