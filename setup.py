@@ -18,6 +18,7 @@ setup(
             'openmc-validate-photon-production=validation.photon_production:main',
             'openmc-run-benchmarks=benchmarking.benchmark:main',
             'openmc-plot-benchmarks=benchmarking.plot:main',
+            'openmc-report-benchmarks=benchmarking.report:main',
         ]
     }
 )

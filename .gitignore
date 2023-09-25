@@ -24,3 +24,9 @@ benchmarks/
 
 # macOS
 *.DS_Store
+
+# tex outputs
+*.tex
+
+# Jupyter Notebooks
+*.ipynb*
