@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "validation"
+version = "0.1.0"
+description = "A collection of validation scripts for OpenMC"
+authors = [
+    {name = "The OpenMC Development Team", email = "openmc-dev@googlegroups.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://github.com/openmc-dev/validation"
+Repository = "https://github.com/openmc-dev/validation"
+
+[project.scripts]
+openmc-validate-neutron-physics = "validation.neutron_physics:main"
+openmc-validate-photon-physics = "validation.photon_physics:main"
+openmc-validate-photon-production = "validation.photon_production:main"
+openmc-run-benchmarks = "benchmarking.benchmark:main"
+openmc-plot-benchmarks = "benchmarking.plot:main"
+openmc-report-benchmarks = "benchmarking.report:main"
+
+[tool.setuptools.packages.find]
+include = ["validation", "benchmarking"]
+
+[tool.setuptools.package-data]
+benchmarking = ["uncertainties.csv"]
