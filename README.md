@@ -17,6 +17,3 @@ The validation package can be installed via:
 python -m pip install .
 ```
 
-## Prerequisites
-
-OpenMC, NumPy, Matplotlib, h5py
