@@ -14,7 +14,7 @@ This repository contains a collection of validation scripts, notebooks, results,
 The validation package can be installed via:
 
 ```bash
-python setup.py install
+python -m pip install .
 ```
 
 ## Prerequisites
